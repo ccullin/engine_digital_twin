@@ -1,0 +1,10 @@
+# ignore log files
+engine_log.csv
+debug_*.txt
+
+# ignore folders
+__pycache__/
+venv/
+env/
+archive_*/
+src/
