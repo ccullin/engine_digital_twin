@@ -370,7 +370,8 @@ class EngineModel:
                 self.engine_data_dict.update(
                     {
                         "theta": self.current_theta,
-                        "brake_torque_nm": T_net_720,
+                        "brake_torque_nm": self.torque_brake,
+                        # "brake_torque_nm": T_net_720,
                         # 'torque_brake': T_brake_720,
                         # 'torque_net': T_net_720,
                         "brake_power_kw": power_kw,
@@ -383,13 +384,15 @@ class EngineModel:
                 )
 
                 # ======== PRINT END OF CYCLE SUMMARY =========
-                print(
-                    f"  720° CYCLE SUMMARY | Cycle {self._cycle_count} | "
-                    f"  RPM {self.rpm:4.0f} | MAP {self.P_manifold/1000:4.1f} kPa | "
-                    f"  Indicated torque : {T_ind_720:+6.1f} Nm | "
-                    f"  Net torque (to vehicle) : {T_net_720:+6.1f} Nm | "
-                    f"  Power to wheels  : {power_kw:+6.2f} kW"
-                )
+                # print(
+                #     f"  720° CYCLE SUMMARY | Cycle {self._cycle_count:2d} | "
+                #     f"  RPM {self.rpm:4.0f} | "
+                #     f"  MAP {self.P_manifold/1000:5.1f} kPa | "
+                #     f"  Torque Ind: {T_ind_720:+6.1f} Nm | "
+                #     f"  Wheel load: {self.wheel_load:+6.1f} Nm | "
+                #     f"  Torque Eng : {T_net_720:+6.1f} Nm | "
+                #     f"  Power : {power_kw:+6.2f} kW"
+                # )
 
         # =================================================================
         # 3. Volume & dV this step
@@ -525,6 +528,14 @@ class EngineModel:
         torque_friction = pf.calc_friction_torque_per_degree(self.rpm)
         torque_brake = torque_indicated - torque_friction
         T_net_engine = torque_brake - self.wheel_load
+        
+        # print(
+        #     "EngineModel  "
+        #     f"{self._cycle_count}/{i} | "
+        #     f"brake torque= {torque_brake:6.0f} | "
+        #     f"wheel laod= {self.wheel_load:6.0f} | "
+        #     f"T_net= {T_net_engine:6.0f} | "
+        # )
 
         self.torque_friction = torque_friction
         self.torque_brake = torque_brake
@@ -585,27 +596,28 @@ class EngineModel:
         # print(
         #     f"cyc{self._cycle_count:3d} | "
         #     f"θ={i:3.0f} | "
-        #     f"{stroke:8s} | "
-        #     # f"rpm={self.rpm:4.0f} | "
-        #     f"spark={'1' if ecu_spark_command else '':1.1s} | "
-        #     # f"inj={'1' if ecu_injector_on else '':1.1s} | "
-        #     # f"fuel={self._cycle_fuel_injected_g*1000:4.1f}mg | "
-        #     # f"heat={self._burn_heat_per_deg:6.1f}J | "
-        #     # f"Q_in={Q_in_per_degree:4.1f}/deg | "
-        #     f"d_work={delta_work_J:5.1f}J | "
-        #     f"dV={dV:9.2e}m3 | "
-        #     f"P_cyl={self.P_cyl / 1e5:6.1f}bar | "
-        #     f"P_next={P_next / 1e5:6.1f}bar | "
-        #     f"V_curr={V_current:9.2e}m3 | "
+        # #     f"{stroke:8s} | "
+        # #     # f"rpm={self.rpm:4.0f} | "
+        # #     f"spark={'1' if ecu_spark_command else '':1.1s} | "
+        # #     # f"inj={'1' if ecu_injector_on else '':1.1s} | "
+        # #     # f"fuel={self._cycle_fuel_injected_g*1000:4.1f}mg | "
+        # #     # f"heat={self._burn_heat_per_deg:6.1f}J | "
+        # #     # f"Q_in={Q_in_per_degree:4.1f}/deg | "
+        # #     f"d_work={delta_work_J:5.1f}J | "
+        # #     f"dV={dV:9.2e}m3 | "
+        # #     f"P_cyl={self.P_cyl / 1e5:6.1f}bar | "
+        # #     f"P_next={P_next / 1e5:6.1f}bar | "
+        # #     f"V_curr={V_current:9.2e}m3 | "
 
-        #     f"V_next={V_next:9.2e}m3 | "
+        # #     f"V_next={V_next:9.2e}m3 | "
 
-        #     f"T_ind={torque_indicated_cyl_3:7.1f} | "
+        #     # f"T_ind={torque_indicated:7.1f} | "
         #     # f"totals ||"
         #     # f"T_ind={torque_indicated:7.1f} | "
         #     # f"T_fric={torque_friction:7.1f} | "
-        #     # f"T_brk={torque_brake:7.1f} | "
-        #     # f"T_net={T_net:7.1f} | "
+        #     f"T_brk= {torque_brake:7.1f} | "
+        #     f"wheel load= {self.wheel_load:5.1f} | "
+        #     f"T_net= {T_net_engine:7.1f} | "
         # )
 
         #  DEBUG print for INJECTION and SPARK
