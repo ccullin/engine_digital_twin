@@ -9,6 +9,7 @@ import sys
 from engine_model import FixedKeyDictionary
 import constants as c
 import numpy as np
+from efi_tables import EFITables
 
 # REQUIRED: Import necessary for 2D map interpolation (Spark/AFR tables)
 from scipy.interpolate import RegularGridInterpolator
@@ -21,6 +22,14 @@ class ECUController:
     """
 
     def __init__(self):
+        
+        # EFI Tables and lookup values
+        self.tables = EFITables()
+        self.ve_fraction = 0.0
+        self.spark_advance_btdc = 0.0
+        self.afr_target = 0.0
+        self.injector_end_timing_degree = 360.0
+        
 
         # State for PID Idle Control
         self.idle_integral = 0.0
@@ -29,18 +38,18 @@ class ECUController:
 
         # --- ECU Standard Outputs ---
         self.spark_active = False
-        self.spark_advance_btdc = 0.0
+
         self.injector_is_active = False  # NEW: Boolean flag for twin
-        self.afr_target = 0.0
+
         self.idle_valve_position = 0.0
         self.fuel_cut_active = False  # Flag for Deceleration Fuel Cut-Off (DFCO)
         self.trapped_air_mass_kg = 0.0
-        self.ve_fraction = 0.0
+
 
         # --- Fuel System Outputs ---
         # self.fuel_mass_mg = 0.0                 # Mass of fuel required (mg)
         # self.injector_pw_msec = 0.0      # Final command to injector (ms)
-        self.injector_end_timing_degree = 360.0
+
         self.injector_start_timing_degree = 0.0  # Store SOI angle
 
         # other
@@ -75,87 +84,6 @@ class ECUController:
             }
         )
 
-        # --- ECU Look-Up Table Definitions (6x6) -------------------------------------------------------------------------
-        RPMS = [100, 600, 2000, 4000, 6000, 8000]
-        MAPS = [30, 50, 75, 95, 105, 150]
-
-        # --- AFR (AIR-FUEL RATIO) ------------------------------------------------------------------------------------------
-        # CRITICAL FIX: The 100 RPM row is set to 8.0:1 (very rich) to ensure the engine gets enough fuel to start.
-        afr_data = np.array(
-            [
-                [
-                    11.5,
-                    11.5,
-                    11.5,
-                    11.5,
-                    11.5,
-                    11.5,
-                ],  # NEW: 100 rpm (CRANKING FIX: Very rich)
-                [11.5, 14.7, 14.7, 14.7, 14.0, 14.0],  # 600 rpm (Idle/Low Load)
-                [14.7, 14.7, 14.7, 13.5, 13.0, 13.0],  # 2000 rpm
-                [14.7, 14.7, 14.0, 12.8, 12.5, 12.5],  # 4000 rpm
-                [14.7, 14.0, 13.0, 12.5, 12.2, 12.2],  # 6000 rpm
-                [14.0, 13.5, 12.5, 12.0, 12.0, 12.0],  # 8000 rpm
-            ]
-        )
-        self.afr_interp = RegularGridInterpolator(
-            (RPMS, MAPS), afr_data, bounds_error=False, fill_value=None
-        )
-
-        # --- VE (VOLUMETRIC EFFICIENCY)-------------------------------------------------------------------------------------
-        # Extrapolated the 600 RPM data for the new 150 kPa column.
-        ve_data = np.array(
-            [
-                [100, 100, 100, 100, 100, 100],  # NEW: 100 rpm (Low Cranking VE)
-                [70, 50, 60, 70, 75, 75],  # 600 rpm
-                [50, 70, 85, 95, 100, 100],  # 2000 rpm
-                [55, 80, 95, 102, 105, 105],  # 4000 rpm
-                [60, 75, 90, 98, 102, 102],  # 6000 rpm
-                [50, 65, 80, 90, 95, 95],  # 8000 rpm
-            ]
-        )
-        self.ve_interp = RegularGridInterpolator(
-            (RPMS, MAPS), ve_data, bounds_error=False, fill_value=None
-        )
-
-        # --- SPARK (BTDC)---------------------------------------------------------------------------------------------------
-        # CRITICAL FIX: The 100 RPM row is set to 5 degrees BTDC to prevent the starter from fighting combustion pressure.
-        spark_data = np.array(
-            [
-                [8, 8, 8, 8, 8, 8],  # NEW: 100 rpm (CRANKING FIX: Safe Retarded Spark)
-                [
-                    8,
-                    30,
-                    25,
-                    20,
-                    18,
-                    15,
-                ],  # 600 rpm (Extrapolated the 150 kPa column as retarded for load)
-                [38, 33, 28, 23, 21, 18],  # 2000 rpm
-                [42, 37, 32, 27, 25, 22],  # 4000 rpm
-                [38, 33, 28, 25, 23, 20],  # 6000 rpm
-                [35, 30, 25, 23, 21, 18],  # 8000 rpm
-            ]
-        )
-        self.spark_interp = RegularGridInterpolator(
-            (RPMS, MAPS), spark_data, bounds_error=False, fill_value=None
-        )
-
-        # --- INJECTION (degrees) -------------------------------------------------------------------------------------------
-        injector_timing_data = np.array(
-            [
-                [150, 140, 120, 100, 90, 80],  #  100 RPM
-                [155, 140, 120, 100, 90, 80],  #  600 RPM
-                [160, 150, 130, 110, 100, 90],  # 2000 RPM
-                [170, 160, 150, 130, 120, 110],  # 4000 RPM
-                [180, 170, 160, 150, 140, 130],  # 6000 RPM
-                [190, 180, 170, 160, 150, 140],  # 8000 RPM
-            ]
-        )
-        self.inj_timing_interp = RegularGridInterpolator(
-            (RPMS, MAPS), injector_timing_data, bounds_error=False, fill_value=None
-        )
-
     # -----------------------------------------------------------------------------------------
 
     def get_outputs(self):
@@ -181,6 +109,7 @@ class ECUController:
         ECU update — called every crank degree.
         This is the single source of truth for all control outputs.
         """
+  
         # =================================================================
         # 1. Sensor inputs
         # =================================================================
@@ -192,6 +121,15 @@ class ECUController:
         cam_pulse = sensors["cam_sync"]
 
         current_rpm_safe = max(RPM, 10.0)
+        
+        # =================================================================
+        # EFI Tables
+        # =================================================================
+        lookup = self.tables.lookup(RPM, MAP_kPa)
+        self.ve_fraction = lookup["ve"] / 100  # convert from deg to fraction
+        self.spark_advance_btdc = lookup["spark"]
+        self.afr_target = lookup["afr"]
+        self.injector_end_timing_degree = lookup["injector"] 
 
         # =================================================================
         # Engine Timing Sync
@@ -232,7 +170,7 @@ class ECUController:
         # 4. Spark advance (2D table)
         # =================================================================
 
-        self.spark_advance_btdc = float(self.spark_interp([RPM, MAP_kPa]))
+        # self.spark_advance_btdc = float(self.spark_interp([RPM, MAP_kPa]))
         # Convert to 720° domain for engine
         spark_fire_angle_720 = 360.0 - self.spark_advance_btdc
 
@@ -251,16 +189,16 @@ class ECUController:
         # =================================================================
         # 5. Target AFR (2D table + WOT enrichment)
         # =================================================================
-        afr_target = float(self.afr_interp([RPM, MAP_kPa]))
+        # afr_target = float(self.afr_interp([RPM, MAP_kPa]))
         # should the WOT enrichment be retained.  This may complicate RL
         # if effective_tps > 90.0:
         #     afr_target = np.clip(afr_target, 11.8, 12.8)
-        self.afr_target = afr_target
+        # self.afr_target = afr_target
 
         # =================================================================
         # 6. Volumetric Efficiency (2D table)
         # =================================================================
-        self.ve_fraction = float(self.ve_interp([RPM, MAP_kPa])) / 100
+        # self.ve_fraction = float(self.ve_interp([RPM, MAP_kPa])) / 100
 
         # =================================================================
         # 7. Trapped air mass — speed-density (per cylinder)
@@ -272,7 +210,7 @@ class ECUController:
         # =================================================================
         # 8. Required fuel mass
         # =================================================================
-        _required_fuel_kg = self.trapped_air_mass_kg / afr_target
+        _required_fuel_kg = self.trapped_air_mass_kg / self.afr_target
         # self._required_fuel_g = required_fuel_g
         _required_fuel_vol_cc = _required_fuel_kg / c.FUEL_DENSITY_KG_CC
 
@@ -308,7 +246,7 @@ class ECUController:
         # =================================================================
         # 10. Injection timing (2D table lookup)
         # =================================================================
-        _injector_end_timing_degree = float(self.inj_timing_interp([RPM, MAP_kPa]))
+        # _injector_end_timing_degree = float(self.inj_timing_interp([RPM, MAP_kPa]))
 
         # print(self.injector_timing_deg)
         # print(calculated_pw_ms)
@@ -326,9 +264,9 @@ class ECUController:
 
         # SOI is EOI minus PW, then wrap-around if necessary
         self.injector_start_timing_degree = (
-            _injector_end_timing_degree - _injector_pw_degree
+            self.injector_end_timing_degree - _injector_pw_degree
         ) % 720.0
-        self.injector_end_timing_degree = _injector_end_timing_degree % 720
+        # self.injector_end_timing_degree = _injector_end_timing_degree % 720
 
         # print(
         #     f"injector start: {self.injector_start_timing_degree} | "
@@ -488,12 +426,12 @@ class ECUController:
         return theoretical_air_kg
 
     # -----------------------------------------------------------------------------------------
-    def _calculate_fuel_mass(self, trapped_air_mass_g, afr_target):
-        """Calculates the required mass of fuel in milligrams (mg)."""
-        # M_fuel (g) = M_air (g) / AFR
-        required_fuel_mass_g = trapped_air_mass_g / afr_target
-        # Convert to milligrams for standard ECU resolution
-        return required_fuel_mass_g * 1000.0  # mg
+    # def _calculate_fuel_mass(self, trapped_air_mass_g, afr_target):
+    #     """Calculates the required mass of fuel in milligrams (mg)."""
+    #     # M_fuel (g) = M_air (g) / AFR
+    #     required_fuel_mass_g = trapped_air_mass_g / afr_target
+    #     # Convert to milligrams for standard ECU resolution
+    #     return required_fuel_mass_g * 1000.0  # mg
 
     # -----------------------------------------------------------------------------------------
     # def _calculate_pulse_width(self, fuel_mass_mg):
