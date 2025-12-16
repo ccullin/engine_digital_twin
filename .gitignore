@@ -1,6 +1,7 @@
-# ignore log files
+# ignore  files
 engine_log.csv
 debug_*.txt
+*copy.py
 
 # ignore folders
 __pycache__/

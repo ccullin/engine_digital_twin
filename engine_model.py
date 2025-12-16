@@ -122,7 +122,7 @@ class EngineModel:
         self.P_ambient_sensor = c.P_ATM_PA
         self.afr_sensor = 0
         self.knock_intensity = 0
-        self.wheel_load = 0
+        self.wheel_load = 0.0
         self._cycle_fuel_injected_cc = 0
         self._cylinder_total_air_mass_kg = 0
         self._exhaust_g_per_degree = 0
@@ -527,6 +527,17 @@ class EngineModel:
         # 3. FRICTION, BRAKE, AND NET TORQUE
         torque_friction = pf.calc_friction_torque_per_degree(self.rpm)
         torque_brake = torque_indicated - torque_friction
+        
+        # --- DEBUG CODE ----
+        if self.wheel_load is None:
+            print(f"ERROR ENGINE: wheel_load is None at theta={self.current_theta}")
+            print(f"Last driver load: {getattr(self, '_last_driver_load', 'unknown')}")
+            import traceback
+            traceback.print_stack()
+            sys.exit()
+        # ---
+        
+        
         T_net_engine = torque_brake - self.wheel_load
         
         # print(
