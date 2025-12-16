@@ -32,33 +32,42 @@ class DashboardManager:
     def get_or_create_figure(self):
         if self.fig is None:
             plt.ion()
-            self.fig = plt.figure(figsize=(16, 9))  # wider window
+            self.fig = plt.figure(figsize=(16, 9))
 
-            # Adjusted GridSpec: give more space to right panel
-            # width_ratios=[1, 3] → base telemetry narrow, chart wide
-            # Add hspace/wspace for breathing room
-            gs = GridSpec(2, 2, figure=self.fig, 
-                          width_ratios=[1, 3],    # ← more room for chart
+            # 2 rows, 2 columns:
+            # Top-left:    Base universal telemetry (text)
+            # Bottom-left: Strategy-specific telemetry table (text)
+            # Right span:  Full-height strategy chart
+            gs = GridSpec(2, 2, figure=self.fig,
+                          width_ratios=[1, 3],
                           height_ratios=[1, 1],
-                          wspace=0.4,             # ← horizontal space between panels
-                          hspace=0.3)             # ← vertical space
+                          wspace=0.4,
+                          hspace=0.4)  # increased hspace for separation
 
-            # Top-left: Base telemetry
+            # Top-left: Universal base telemetry
             self.base_ax = self.fig.add_subplot(gs[0, 0])
             self.base_ax.axis('off')
             self.base_text = self.base_ax.text(0.05, 0.95, "", va='top', ha='left',
                                               fontsize=10, family='monospace')
 
-            # Right panel: Full height, wider
+            # Bottom-left: Strategy-specific overlay table
+            self.overlay_ax = self.fig.add_subplot(gs[1, 0])
+            self.overlay_ax.axis('off')
+            self.overlay_text = self.overlay_ax.text(0.05, 0.95, "", va='top', ha='left',
+                                                    fontsize=10, family='monospace')
+            self.overlay_text.set_text("─ STRATEGY TELEMETRY ─\n(No data yet)")
+
+            # Right side: Full height strategy panel
             self.strategy_ax = self.fig.add_subplot(gs[:, 1])
             self.strategy_ax.set_title("Mode-Specific Panel")
 
-            # More padding around everything
-            self.fig.tight_layout(pad=4.0)  # ← increased outer padding
+            # Clean padding
+            self.fig.subplots_adjust(left=0.05, right=0.95, top=0.93, bottom=0.07)
 
-            # Key events
             self.fig.canvas.mpl_connect("key_press_event", self.on_key_press)
             self.fig.canvas.mpl_connect("close_event", self.on_close_event)
+            
+            self.toolbar = self.fig.canvas.toolbar  # Keep reference
 
         return self.fig, self.base_ax, self.strategy_ax
     
@@ -95,6 +104,21 @@ class DashboardManager:
 
         fig = self.get_or_create_figure()
         self.base_text.set_text(telemetry_text)
+    
+    def update_strategy_overlay(self, text_lines):
+        """Update the bottom-left strategy telemetry table"""
+        if not self.enabled or self.overlay_text is None:
+            return
+
+        header = [
+            "╔══════════════════════════════════╗",
+            "║       STRATEGY TELEMETRY         ║",
+            "╚══════════════════════════════════╝",
+            ""
+        ]
+        content = header + text_lines
+        telemetry_text = "\n".join(content)
+        self.overlay_text.set_text(telemetry_text)
 
     def get_strategy_axes(self):
         """Return axes for strategy to plot on"""
@@ -179,12 +203,39 @@ class DashboardManager:
         """Handles clicking the 'X' button on the window."""
         self.close_and_cleanup()
 
-    def close_and_cleanup(self):
-        """Centralized cleanup and focus return logic."""
+    # def close_and_cleanup(self):
+    #     """Centralized cleanup and focus return logic."""
 
-        # The window close action (either 'q' or 'X' button)
-        # must be performed before returning focus.
-        # plt.close(self.fig)
+    #     # The window close action (either 'q' or 'X' button)
+    #     # must be performed before returning focus.
+    #     # plt.close(self.fig)
+
+    #     self.stopped = True
+    #     self._set_focus("terminal")
+    
+    def close_and_cleanup(self):
+        """Safely close figure and prevent Tkinter toolbar crash on macOS"""
+        # if self.fig is None:
+        #     self.stopped = True
+        #     self._set_focus("terminal")
+        #     return
+
+        # --- FIX 1: Disconnect axes observers (prevents late toolbar updates) ---
+        try:
+            if hasattr(self.fig, "_axobservers"):
+                self.fig._axobservers.callbacks.clear()
+        except:
+            pass
+
+        # --- FIX 2: Explicitly hide/destroy toolbar before figure close ---
+        try:
+            if hasattr(self, "toolbar") and self.toolbar is not None:
+                self.toolbar.set_visible(False)  # Hide it
+                # On some backends, destroy() helps
+                if hasattr(self.toolbar, "destroy"):
+                    self.toolbar.destroy()
+        except:
+            pass
 
         self.stopped = True
         self._set_focus("terminal")

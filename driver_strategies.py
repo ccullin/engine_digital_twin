@@ -55,25 +55,128 @@ class IdleStrategy(BaseStrategy):
         return tps, load, pressure
 
 
-class WotStrategy(BaseStrategy):
-    """ Engine wide open throttle from idle RPM """
+class RoadTestStrategy(BaseStrategy):
+    """Realistic open-road driving: hills, varying throttle, altitude effects"""
+    
+    CYCLE_LENGTH = 400  # cycles for one full "drive" loop (~80–40 sec depending on RPM)
+    
+    def __init__(self):
+        self.start_rpm = 900
+        # Pre-compute profiles for speed (no per-cycle computation overhead)
+        cycles = np.arange(RoadTestStrategy.CYCLE_LENGTH)
+        phase = cycles / RoadTestStrategy.CYCLE_LENGTH * 2 * np.pi
         
-    def driver_update(self, driver):
-        tps = 100.0
-        load = 0.0
-        pressure = c.P_ATM_PA
-        return tps, load, pressure
-    
-    
-class RoadTestStategy(BaseStrategy):
-    """ road test over varying landcapes """
-    
-    def diver_update(self, driver):
-        driver.tps = 0.0
-        driver.load = 0.0
-        driver.air_pressure = c.P_ATM_PA
+        # Elevation: rolling hills + big climb
+        self.elevation_m = 200 + 100 * np.sin(phase * 3) + 150 * np.sin(phase * 0.8 + 1)
+        
+        # Grade (%) from elevation gradient
+        self.grade_pct = np.gradient(self.elevation_m) * 20  # scaled to realistic range
+        self.grade_pct = np.clip(self.grade_pct, -10, 12)
+        
+        # Throttle: base cruise oscillation + extra on climbs
+        self.base_tps = 30 + 40 * (0.5 + 0.5 * np.sin(phase * 2.5))
+        self.climb_boost = 40 * (self.grade_pct > 4)
+        self.tps_profile = np.clip(self.base_tps + self.climb_boost, 10, 100)
+        
+        # Ambient pressure drop with altitude
+        self.ambient_pressure_pa = c.P_ATM_PA - 11.3 * (self.elevation_m - 200)
+        self.ambient_pressure_pa = np.maximum(self.ambient_pressure_pa, 75000)  # ~2500m max
+        
+        # Road load (engine torque Nm)
+        m_kg = 1500
+        g = 9.81
+        roll_N = 0.012 * m_kg * g
+        grade_N = m_kg * g * np.sin(np.arctan(self.grade_pct / 100))
+        # Simple aero + base
+        aero_base_N = 100 + 300 * np.power(np.linspace(20, 80, RoadTestStrategy.CYCLE_LENGTH)/50, 2)
+        total_load_N = roll_N + grade_N + aero_base_N
+        self.load_profile = np.clip(total_load_N * 0.15, 0, 550)  # tuned to realistic engine torque range
 
+    def driver_update(self, driver):
+        cycle_idx = driver.cycle % RoadTestStrategy.CYCLE_LENGTH
+        self.current_cycle_idx = cycle_idx  # for any future get_telemetry use
+
+        tps = self.tps_profile[cycle_idx]
+        load = self.load_profile[cycle_idx]
+        pressure = self.ambient_pressure_pa[cycle_idx]
+
+        return tps, load, pressure
+
+    def get_telemetry(self):
+        idx = getattr(self, 'current_cycle_idx', 0)
+        return {
+            "road_grade_%": round(self.grade_pct[idx], 1),
+            "elevation_m": round(self.elevation_m[idx]),
+            "road_load_Nm": round(self.load_profile[idx]),
+        }
     
+    def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
+        ax = dashboard_manager.get_strategy_axes()
+        if ax is None:
+            return
+
+        progress = current_cycle % RoadTestStrategy.CYCLE_LENGTH
+        current_idx = int(progress)
+
+        # === FIRST CALL: Create all artists once ===
+        if not hasattr(self, 'artists_created'):
+            ax.clear()
+            ax.set_title("Road Test - Mountain Drive Profile")
+            ax.set_xlabel("Cycle (loop = 400 cycles)")
+            ax.set_ylabel("Throttle % / Load (Nm)")
+            ax.set_ylim(0, max(110, self.load_profile.max() + 50))
+            ax.grid(True, alpha=0.3)
+
+            cycles_x = np.arange(RoadTestStrategy.CYCLE_LENGTH)
+
+            # Terrain fill — store the PolyCollection directly (no [0])
+            self.terrain_fill = ax.fill_between(cycles_x, self.elevation_m - 200, -100,
+                                                color='lightgray', alpha=0.4)
+
+            # Throttle line
+            self.throttle_line, = ax.plot(cycles_x, self.tps_profile,
+                                          color='orange', linewidth=3, label='Throttle %')
+
+            # Load line
+            self.load_line, = ax.plot(cycles_x, self.load_profile,
+                                      color='green', linewidth=3, label='Road Load (Nm)')
+
+            # Progress marker (vertical red line)
+            self.progress_line = ax.axvline(progress, color='red', linestyle='--', linewidth=2)
+
+            # Grade on twin axis
+            self.ax2 = ax.twinx()
+            self.grade_line, = self.ax2.plot(cycles_x, self.grade_pct,
+                                             color='brown', linewidth=2, alpha=0.7, label='Grade %')
+            self.ax2.set_ylabel("Grade (%)", color='brown')
+            self.ax2.tick_params(axis='y', labelcolor='brown')
+
+            # Legend
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = self.ax2.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+
+            self.artists_created = True
+
+        else:
+            # === SUBSEQUENT CALLS: Only update the moving part ===
+            self.progress_line.set_xdata([progress, progress])
+
+        # === Always update bottom-left strategy overlay table ===
+        lines = [
+            f"Cycle:         {current_cycle:8.0f}",
+            f"Progress:      {progress:.0f}/{RoadTestStrategy.CYCLE_LENGTH}",
+            "",
+            f"Grade:         {self.grade_pct[current_idx]:+8.1f} %",
+            f"Elevation:     {self.elevation_m[current_idx]:8.0f} m",
+            f"Road Load:     {self.load_profile[current_idx]:8.0f} Nm",
+            f"Throttle:      {self.tps_profile[current_idx]:8.1f} %",
+            f"Amb Press:     {self.ambient_pressure_pa[current_idx]/100:8.0f} hPa",
+        ]
+        dashboard_manager.update_strategy_overlay(lines)
+
+        dashboard_manager.draw()
+
 
 class DynoStrategy(BaseStrategy):
     """ a variable load Dyno with a full rpm sweep """

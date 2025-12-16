@@ -101,6 +101,12 @@ if __name__ == "__main__":
                 # === REAL-TIME DASHBOARD UPDATE for base telemetry ===
                 if dashboard_manager:
                     dashboard_manager.update_base_telemetry(cycle_count, data)
+                    if hasattr(driver.strategy, 'update_dashboard'):
+                        driver.strategy.update_dashboard(
+                            dashboard_manager,
+                            current_cycle=cycle_count,
+                            data=data
+                        )
                     dashboard_manager.draw()
 
 
@@ -108,7 +114,6 @@ if __name__ == "__main__":
         print("\nSimulation stopped by user")
 
     finally:
-        driver.strategy.print_final_pid_score()
         if not args.debug:
             if logger:
                 logger.close()
