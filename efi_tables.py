@@ -16,26 +16,26 @@ class EFITables:
         self.map_bins = np.array([30, 50, 75, 95, 105, 150])  # kPa
 
         # === VE Table: Current, Safe Default, Min/Max Bounds ===
-        self.ve_table = self._prooven_ve_table()
-        # self.ve_table = self._safe_ve_table()
+        # self.ve_table = self._prooven_ve_table()
+        self.ve_table = self._learned_ve_table()
         self.ve_min = self._ve_min_bounds()
         self.ve_max = self._ve_max_bounds()
 
         # === Spark Table (BTDC) ===
-        self.spark_table = self._prooven_spark_table()
-        # self.spark_table = self._safe_spark_table()
+        # self.spark_table = self._prooven_spark_table()
+        self.spark_table = self._learned_spark_table()
         self.spark_min = self._spark_min_bounds()
         self.spark_max = self._spark_max_bounds()
 
         # === AFR Target Table ===
-        self.afr_table = self._prooven_afr_table()
-        # self.afr_table = self._safe_afr_table()
+        # self.afr_table = self._prooven_afr_table()
+        self.afr_table = self._learned_afr_table()
         self.afr_min = self._afr_min_bounds()
         self.afr_max = self._afr_max_bounds()
         
         # === Injector Timing Table ===
-        self.injector_table = self._prooven_injector_table()
-        # self.injector_table = self._safe_injector_table()
+        # self.injector_table = self._prooven_injector_table()
+        self.injector_table = self._learned_injector_table()
         self.injector_min = self._injector_min_bounds()
         self.injector_max = self._injector_max_bounds()
         
@@ -73,6 +73,16 @@ class EFITables:
 
     def _safe_afr_table(self):
         return np.full((6, 6), 13.5)  # Moderately rich — safe and smooth
+    
+    def _safe_injector_table(self):
+        return np.array([
+            [150, 140, 120, 100,  90,  80],  #  100 RPM
+            [155, 140, 120, 100,  90,  80],  #  600 RPM
+            [160, 150, 130, 110, 100,  90],  # 2000 RPM
+            [170, 160, 150, 130, 120, 110],  # 4000 RPM
+            [180, 170, 160, 150, 140, 130],  # 6000 RPM
+            [190, 180, 170, 160, 150, 140],  # 8000 RPM
+        ])
     
     # =========================================================================
     # PROVEN Tables (known working state - used as benchmark)
@@ -116,6 +126,50 @@ class EFITables:
             [180, 170, 160, 150, 140, 130],  # 6000 RPM
             [190, 180, 170, 160, 150, 140],  # 8000 RPM
         ])
+        
+    # =========================================================================
+    # RL LEARNED Tables
+    # =========================================================================
+    def _learned_ve_table(self):
+        return np.array([
+            [ 40,   70,  70 ,  70 ,  70 ,  70 ],
+            [ 40,   70,   70,   70,   70,   70 ],
+            [ 40,   70,   70,   70,  107,  70 ],
+            [ 40,   70,   70,   70,  115,   70 ],
+            [ 40,   70,   70,   70,   70,   70 ],
+            [ 40,   70,   70,   70,   70,   70 ],
+        ])
+
+    def _learned_spark_table(self):
+        return np.array([
+            [15,  15,  15,  15,  15,  15, ],
+            [20,  20,  20,  20,  20,  20, ],
+            [20,  20,  20,  20,  21, 20, ],
+            [20,  20,  20,  20,  21, 20, ],
+            [20,  20,  20,  20,  20,  20, ],
+            [20,  20,  20,  20,  20,  20, ],  # 8000 rpm
+        ])
+    
+    def _learned_afr_table(self):
+        return np.array([
+            [13. , 13. , 13. , 13. , 13. , 13.0],
+            [13.5, 13.5, 13.5, 13.5, 14. , 14.0],
+            [13. , 13.5, 13.5, 14. , 14.2, 14.5],
+            [12.8, 13.5, 13.5, 13.5, 14. , 14.2],
+            [12.5, 13.2, 13.5, 13.8, 14.2, 14.5],
+            [12.2, 13. , 13.5, 14. , 14.5, 15.0],  # 8000 rpm
+        ])
+        
+    def _learned_injector_table(self):
+        return np.array([
+            [150, 140, 120, 100,  90,  80],  #  100 RPM
+            [155, 140, 120, 100,  90,  80],  #  600 RPM
+            [160, 150, 130, 110, 100,  90],  # 2000 RPM
+            [170, 160, 150, 130, 120, 110],  # 4000 RPM
+            [180, 170, 160, 150, 140, 130],  # 6000 RPM
+            [190, 180, 170, 160, 150, 140],  # 8000 RPM
+        ])
+
 
     # =========================================================================
     # Physics-Based Hard Bounds (explicit values)
@@ -231,10 +285,24 @@ class EFITables:
             self.injector_interp.values[:] = clipped
             
     def reset_to_safe(self):
-        self.ve_table[:] = self._safe_ve()
-        self.spark_table[:] = self._safe_spark()
-        self.afr_table[:] = self._safe_afr()
-        self.injector_table[:] = self._safe_injector()
+        self.ve_table[:] = self._safe_ve_table()
+        self.spark_table[:] = self._safe_spark_table()
+        self.afr_table[:] = self._safe_afr_table()
+        self.injector_table[:] = self._safe_injector_table()
+        self._build_interpolators()
+        
+    def reset_to_prooven(self):
+        self.ve_table[:] = self._prooven_ve_table()
+        self.spark_table[:] = self._prooven_spark_table()
+        self.afr_table[:] = self._prooven_afr_table()
+        self.injector_table[:] = self._prooven_injector_table()
+        self._build_interpolators()
+        
+    def reset_to_learned(self):
+        self.ve_table[:] = self._learned_ve_table()
+        self.spark_table[:] = self._learned_spark_table()
+        self.afr_table[:] = self._learned_afr_table()
+        self.injector_table[:] = self._learned_injector_table()
         self._build_interpolators()
 
     def lookup(self, rpm: float, map_kpa: float) -> dict:
@@ -245,3 +313,50 @@ class EFITables:
             "afr": float(self.afr_interp(points)),
             "injector": float(self.injector_interp(points)),
         }
+    
+    def apply_global_multipliers(self, ve_mult, spark_offset, afr_offset):
+        """
+        Applies the RL agent's 3 actions to the entire base map.
+        ve_mult: Global multiplier for the Fuel (VE) table (e.g., 0.8 to 1.3).
+        spark_offset: Degrees of timing added/subtracted (e.g., -10 to +15).
+        afr_offset: Adjustment to target AFR (e.g., -1.5 to +1.5).
+        """
+        # 1. Update VE Table (Clipped by physics bounds)
+        # Note the () after _safe_ve_table — it's a function call!
+        new_ve = self._safe_ve_table() * ve_mult
+        self.ve_table[:] = np.clip(new_ve, self.ve_min, self.ve_max)
+        
+        # 2. Update Spark Table
+        new_spark = self._safe_spark_table() + spark_offset
+        self.spark_table[:] = np.clip(new_spark, self.spark_min, self.spark_max)
+        
+        # 3. Update AFR Table
+        new_afr = self._safe_afr_table() + afr_offset
+        self.afr_table[:] = np.clip(new_afr, self.afr_min, self.afr_max)
+        
+        # CRITICAL: Rebuild/Update interpolators so the engine "sees" the new tables
+        self._build_interpolators()
+        
+    def apply_local_adjustments(self, rpm, map_kpa, ve_mult, spark_offset, afr_offset):
+        """
+        Applies adjustments ONLY to the cells closest to current RPM/MAP.
+        """
+        # Find the 6x6 grid indices for current state
+        # (This keeps the rest of the map 'Safe' while we tune this point)
+        new_ve = self.ve_table.copy()
+        new_spark = self.spark_table.copy()
+        new_afr = self.afr_table.copy()
+
+        # Simple approach: Find nearest neighbor cell and apply change
+        rpm_idx = (np.abs(self.rpm_bins - rpm)).argmin()
+        map_idx = (np.abs(self.map_bins - map_kpa)).argmin()
+
+        # Apply the agent's 'suggested' offset to that specific cell
+        new_ve[rpm_idx, map_idx] *= ve_mult
+        new_spark[rpm_idx, map_idx] += spark_offset
+        new_afr[rpm_idx, map_idx] += afr_offset
+
+        # Update the live tables with clipped values
+        self.update_table("ve", new_ve)
+        self.update_table("spark", new_spark)
+        self.update_table("afr", new_afr)

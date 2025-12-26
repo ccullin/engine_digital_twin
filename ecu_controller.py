@@ -20,8 +20,11 @@ class ECUController:
     Simulates the Engine Control Unit (ECU).
     It determines control outputs (Spark, AFR, Idle Valve Position) based on sensor inputs.
     """
-
-    def __init__(self):
+    
+    def __init__(self, rl_idle_mode=False):
+        # used to bypass functions such as _idle_pid to allow training
+        self.rl_idle_mode = rl_idle_mode
+        self.external_idle_command = 0.0 # set by RL training functions
         
         # EFI Tables and lookup values
         self.tables = EFITables()
@@ -33,8 +36,11 @@ class ECUController:
 
         # State for PID Idle Control
         self.idle_integral = 0.0
-        self.last_error = 0.0
+        self.last_error_proportional = 0.0
         self.idle_target_rpm = c.IDLE_RPM
+        self._idle_pid_base_flow = 1.9
+        self._cold_bonus_mult = 1.0
+        self._kp_mult = 1.0
 
         # --- ECU Standard Outputs ---
         self.spark_active = False
@@ -67,8 +73,12 @@ class ECUController:
         self.first_crank_rotation = True
         self.cycle = 1
 
-        # --- for internal debugging
+        # --- for internal debugging ---
         self._required_fuel_g = 0
+        
+        # --- idle pid variables ---
+        self.pid_error_integral = 0.0
+        self._filtered_drpm = 0.0
 
         self.output_dict = FixedKeyDictionary(
             {
@@ -83,9 +93,10 @@ class ECUController:
                 "fuel_cut_active": self.fuel_cut_active,
             }
         )
+        
+
 
     # -----------------------------------------------------------------------------------------
-
     def get_outputs(self):
         self.output_dict.update(
             {
@@ -114,6 +125,7 @@ class ECUController:
         # 1. Sensor inputs
         # =================================================================
         RPM = sensors["RPM"]
+        rpm_720_history = sensors["rpm_720_history"]
         MAP_kPa = sensors["MAP_kPa"]
         TPS = sensors["TPS_percent"]
         CLT_C = sensors["CLT_C"]
@@ -158,13 +170,19 @@ class ECUController:
         # =================================================================
         # 2. Idle valve control (ECU owns this)
         # =================================================================
-        idle_pos = self._idle_pid(TPS, RPM, CLT_C)
-        self.idle_valve_position = idle_pos
+        if self.rl_idle_mode:
+            # RL mode: do NOTHING here — idle valve will be set externally
+            idle_valve_position = self.external_idle_command  # set by RL env
+        else:
+            # Normal mode: use PID
+            idle_valve_position = self._idle_pid(TPS, RPM, rpm_720_history, CLT_C)
+        
+        self.idle_valve_position = idle_valve_position
 
         # =================================================================
         # 3. Effective throttle = driver pedal + idle valve
         # =================================================================
-        effective_tps = np.clip(TPS + idle_pos, 0.0, 100.0)
+        effective_tps = np.clip(TPS + idle_valve_position, 0.0, 100.0)
 
         # =================================================================
         # 4. Spark advance (2D table)
@@ -225,9 +243,6 @@ class ECUController:
         # =================================================================
         # 9. Injector pulse width
         # =================================================================
-        # injector_flow_g_per_ms = (c.INJECTOR_FLOW_CC_PER_MIN / 60_000.0) * c.FUEL_DENSITY_G_CC
-        # calculated_pw_ms = required_fuel_g / injector_flow_g_per_ms
-        # calculated_pw_ms += c.INJECTOR_DEAD_TIME_MS
 
         _injector_pw_msec = (
             _required_fuel_vol_cc / c.INJECTOR_FLOW_CC_PER_MIN
@@ -241,26 +256,7 @@ class ECUController:
         #     f"required fuel cc: {_required_fuel_vol_cc} | "
         #     f"injector pw ms: {_injector_pw_msec} | "
         #     )
-        # calculated_pw_ms = np.clip(calculated_pw_ms, 0.5, 15.0)
 
-        # =================================================================
-        # 10. Injection timing (2D table lookup)
-        # =================================================================
-        # _injector_end_timing_degree = float(self.inj_timing_interp([RPM, MAP_kPa]))
-
-        # print(self.injector_timing_deg)
-        # print(calculated_pw_ms)
-
-        # =================================================================
-        # 11. Injector Logic
-        # =================================================================
-        # --- Time conversion for the current step ---
-
-        # time_per_degree_ms = 1000.0 / (current_rpm_safe * 6.0)
-
-        # 1. Calculate Start of Injection (SOI)
-        # We need to convert the pulse width (ms) to degrees at the current RPM
-        # pw_in_degrees = calculated_pw_ms / time_per_degree_ms
 
         # SOI is EOI minus PW, then wrap-around if necessary
         self.injector_start_timing_degree = (
@@ -302,6 +298,7 @@ class ECUController:
                     current_theta < self.injector_end_timing_degree
                 ):
                     self.injector_is_active = True
+                    
 
         # =================================================================
         # 12. Return outputs
@@ -324,68 +321,105 @@ class ECUController:
         return self.get_outputs()
 
     # -----------------------------------------------------------------------------------------
-    def _idle_pid(self, TPS_percent, RPM, CLT_C):
+    def _idle_pid(self, TPS_percent, RPM, rpm_history, CLT_C):
+        current_theta = int(self.calculated_theta % 720)
         idle_pos = 0.0
-        err = 0.0
+        rpm_avg = np.mean(rpm_history)
+        prev_rpm = rpm_history[(current_theta - 2) % 720]
+        
         self.fuel_cut_active = False
 
         # Deceleration Fuel Cut-Off (DFCO) Thresholds
-        DFCO_ENGAGE_RPM = 2000  # RPM must be above this to engage DFCO (coasting)
+        DFCO_ENGAGE_RPM = 3000  # RPM must be above this to engage DFCO (coasting)
         # DFCO_DISENGAGE_RPM = self.idle_target_rpm + 50 # Fuel injection resumes below this to prevent stall
-        DFCO_DISENGAGE_RPM = 1350
+        DFCO_DISENGAGE_RPM = 2000
         # DFCO Logic: High RPM, foot off pedal
-        if TPS_percent < 1.0 and RPM > DFCO_ENGAGE_RPM:
+        if TPS_percent < 1.0 and rpm_avg > DFCO_ENGAGE_RPM:
             self.fuel_cut_active = True
             # self.idle_integral = 0.0 # Reset integral term when fuel is cut
             idle_pos = 0.0  # Close idle valve completely (0% WOT equivalent flow)
-
+            
         # PID Idle Control Logic
         # Only engage PID if not in DFCO and the throttle is mostly closed
-        elif TPS_percent < 5.0 and RPM < DFCO_DISENGAGE_RPM:
-            # Error is positive when RPM is too slow
-            err = self.idle_target_rpm - RPM
-
+        elif TPS_percent < 5.0 and rpm_avg < DFCO_DISENGAGE_RPM:
+                
+            # ------------------------------------------------------------------
+            # 2. Errors
+            # ------------------------------------------------------------------
+            error_instant = self.idle_target_rpm - RPM
+            error_avg = self.idle_target_rpm - rpm_avg
+            
             # PID gains — Re-tuned for the 0.0 to 5.0 WOT equivalent output range
             # Note: Gains are significantly smaller than the old ones (which targeted the 20-68 actuator range)
             # kp, ki, kd = 0.009, 0.0003, 0.0012
-            kp = 0.007  # was 0.009
-            ki = 0.00018  # was 0.0003 → slower integral, no windup
-            kd = 0.0009  # was 0.0012 → slightly less D overshoot
+            # kp = 0.007  # was 0.009
+            # ki = 0.00018  # was 0.0003 → slower integral, no windup
+            # kd = 0.0009  # was 0.0012 → slightly less D overshoot
+            kp = 0.005  # was 0.009
+            ki = 0.0004 # was 0.0003 → slower integral, no windup
+            kd = 0.0 
+            # PID_BACK_CALC_GAIN = 2000
+            
+            # ------------------------------------------------------------------
+            # 3. Proportional – on lightly filtered RPM
+            # ------------------------------------------------------------------
+            P = (kp * self._kp_mult) * error_instant 
+                  
+            # ------------------------------------------------------------------
+            # 4. Integral – on average rpm (aka filtered)
+            # ------------------------------------------------------------------
+            self.idle_integral += ki * error_avg
+            self.idle_integral = np.clip(self.idle_integral, -5.0, 5.0)  # small limits in % equiv
+            I = self.idle_integral
+            
+            # ------------------------------------------------------------------
+            # 5. Derivative – on instantaneous rate (proper sign & filtered)
+            # ------------------------------------------------------------------
+            rpm_rate = RPM - prev_rpm # rate of change
+            D = kd * rpm_rate # opposes acceleration
+       
+            # ------------------------------------------------------------------
+            # 6. Cold Base 
+            # ------------------------------------------------------------------
+            self._idle_pid_base_flow = 2.8
 
-            # Integral with anti-windup (limits remain the same as they operate on the error in RPM)
-            self.idle_integral += err
-            self.idle_integral = np.clip(self.idle_integral, -1200, 1200)
+            # Base + cold bonus
+            cold_bonus = max(0.0, (70.0 - CLT_C) * 0.065)
+            base_pos = (self._idle_pid_base_flow + cold_bonus) * self._cold_bonus_mult
+            
+            # ------------------------------------------------------------------
+            # 7. output
+            # ------------------------------------------------------------------
+            pid_output = P + I + D
 
-            # Derivative
-            deriv = err - self.last_error
-
-            # Base idle valve position (WOT equivalent flow percentage) - Normalized
-            BASE_IDLE_FLOW = (
-                1.9  # 1.8% WOT equivalent flow for warm engine (Replaces old 32.0)
-            )
-            COLD_SENSITIVITY = (
-                0.065  # 0.065% flow per degree C under 70C (Replaces old 0.65)
-            )
-
-            # Base position includes cold enrichment
-            cold_bonus = max(0.0, (70.0 - CLT_C) * COLD_SENSITIVITY)
-            base_pos = BASE_IDLE_FLOW + cold_bonus
-
-            # Raw PID output
-            pid_output = kp * err + ki * self.idle_integral + kd * deriv
-
-            # Final position (Base + PID)
             idle_pos = base_pos + pid_output
+            # Soft safety clip (wider than before if needed, but not required)
+            idle_pos = np.clip(idle_pos, 0.0, 30.0)
 
-            # The clip is now a safety guard against extreme, incorrect values
-            idle_pos = np.clip(idle_pos, 0.0, 20.0)
 
         else:
-            # Driver on throttle (> 5.0%) or DFCO has been disabled
-            # self.idle_integral = 0.0
             idle_pos = 0.0
 
-        self.last_error = err if TPS_percent < 5.0 else 0.0
+        # self.last_error_propotional = err_proportional if TPS_percent < 5.0 else 0.0
+
+        # if current_theta % 20 == 0:
+        # print(
+        #     f"theta: {current_theta:3d} | "
+        #     f"RPM: {int(RPM):3d} | "
+        #     f"prev_rpm: {int(prev_rpm):3d} | "
+        #     f"P: {P:6.0f} | "
+        #     f"I: {self.pid_error_integral:6.0f} | "
+        #     f"D: {D:4.2e} | "
+        #     f"PID output: {pid_clamped:10.2f} | "
+        #     f"Idle Pos: {idle_pos:10.2f}"
+        # )
+        
+        # if current_theta % 90 == 0:
+        #     print(
+        #         f"theta: {current_theta:3d} | "
+        #         f"IDLE | RPM:{int(RPM):4d} avg:{int(rpm_avg):4d} | "
+        #         f"P:{P:+6.3f} I:{I:+6.3f} | base:{base_pos:5.2f} → pos:{idle_pos:5.2f}")
+
 
         return idle_pos
 
@@ -424,40 +458,3 @@ class ECUController:
         #     )
 
         return theoretical_air_kg
-
-    # -----------------------------------------------------------------------------------------
-    # def _calculate_fuel_mass(self, trapped_air_mass_g, afr_target):
-    #     """Calculates the required mass of fuel in milligrams (mg)."""
-    #     # M_fuel (g) = M_air (g) / AFR
-    #     required_fuel_mass_g = trapped_air_mass_g / afr_target
-    #     # Convert to milligrams for standard ECU resolution
-    #     return required_fuel_mass_g * 1000.0  # mg
-
-    # -----------------------------------------------------------------------------------------
-    # def _calculate_pulse_width(self, fuel_mass_mg):
-    #     """
-    #     Converts required fuel mass (mg) into an Injector Pulse Width (ms).
-    #     This is a core injector model calculation.
-    #     """
-
-    #     # 1. Convert Mass Flow Rate to Volume Flow Rate (V_fuel)
-    #     # Fuel density is in g/cc. Mass is in mg. Convert mg to g:
-    #     fuel_mass_g = fuel_mass_mg / 1000.0
-
-    #     # V_fuel (cc) = M_fuel (g) / Fuel_Density (g/cc)
-    #     fuel_volume_cc = fuel_mass_g / c.FUEL_DENSITY_G_CC
-
-    #     # 2. Convert Volume Flow Rate to Time (Pulse Width)
-    #     # Time (min) = V_fuel (cc) / I_FLOW_CC_MIN (cc/min)
-    #     required_time_min = fuel_volume_cc / c.INJECTOR_FLOW_CC_PER_MIN
-
-    #     # 3. Convert Time to milliseconds (ms) and apply dead time
-    #     # Time (ms) = Time (min) * 60,000 ms/min
-    #     required_time_ms = required_time_min * 60000.0
-
-    #     # Total Pulse Width = Required Open Time + Injector Dead Time/Offset
-    #     #
-    #     pulse_width_ms = required_time_ms + c.V_OFFSET_MS
-
-    #     # Must be positive; clamp to a small minimum if the calculated time is near zero
-    #     return max(0.0, pulse_width_ms)

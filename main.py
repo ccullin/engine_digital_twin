@@ -43,15 +43,6 @@ class SimulationManager:
             self.engine.P_ambient_sensor = driver_dict["ambient_pressure"]
             self.engine.wheel_load = driver_dict["wheel_load"]
             
-             # --- DEBUG CODE ----
-            if driver_dict["wheel_load"] is None:
-                print(f"ERROR MAIN: wheel_load is None at theta={cycle_count}/{self.degree_count}")
-                print(f"Last driver load: {getattr(self, '_last_driver_load', 'unknown')}")
-                import traceback
-                traceback.print_stack()
-                sys.exit()
-            # ---
-
             # 3. get the ecu reponse to current engine sensors
             ecu_outputs_dict = self.ecu.update(self.engine.get_sensors())
             

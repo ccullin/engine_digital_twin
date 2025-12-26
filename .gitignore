@@ -2,6 +2,8 @@
 engine_log.csv
 debug_*.txt
 *copy.py
+.DS_Store
+events.*
 
 # ignore folders
 __pycache__/
@@ -9,3 +11,13 @@ venv/
 env/
 archive_*/
 src/
+
+
+# Reinforced Learning files
+#files
+rl_.py
+*.zip
+#folders
+rl/
+tb_logs/
+

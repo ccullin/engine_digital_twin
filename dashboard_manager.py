@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+import numpy as np
 
 import platform
 import subprocess
@@ -88,6 +89,7 @@ class DashboardManager:
             "",
             "─ Sensors ─",
             f"RPM:            {sensors_dict['RPM']:8.0f}",
+            f"RPM avg:        {np.mean(sensors_dict['rpm_720_history']):8.0f}",
             f"MAP:            {sensors_dict['MAP_kPa']:8.1f} kPa",
             f"AFR:            {sensors_dict['actual_AFR']:8.3f}",
             f"CLT:            {sensors_dict['CLT_C']:8.1f} °C",
