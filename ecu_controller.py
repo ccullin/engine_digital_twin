@@ -142,19 +142,13 @@ class ECUController:
         
         # 2. Subsystems
         self._sync_timing(crank_pos, cam_pulse)
-        self._lookup_tables(RPM, MAP_kPa)
-        # RL spark override
-        if self.rl_wot_spark_mode:
-            self.spark_advance_btdc = self.external_spark_advance  # RL override
-            
+        self._lookup_tables(RPM, MAP_kPa)         
         self._calculate_spark_timing()
         self._calculate_fuel_delivery(MAP_kPa, c.T_INTAKE_K, RPM)
         self._calculate_idle_valve(TPS, RPM, rpm_history, CLT_C)
 
         # 3. Build outputs
         return self.get_outputs()
-    
-        
 
     # ---------------------------------------------------------------------
     def _sync_timing(self, crank_pos, cam_pulse):
@@ -201,8 +195,13 @@ class ECUController:
         """EFI table lookups (VE, spark, AFR, injector timing)."""
         
         lookup = self.tables.lookup(RPM, MAP_kPa)
-        self.ve_fraction = lookup["ve"] / 100  # convert from deg to fraction
-        self.spark_advance_btdc = lookup["spark"]
+        self.ve_fraction = lookup["ve"] / 100  # converted to fraction
+        
+        if self.rl_wot_spark_mode:
+            self.spark_advance_btdc = self.external_spark_advance # RL spark override
+        else: 
+            self.spark_advance_btdc = lookup["spark"]
+            
         self.afr_target = lookup["afr"]
         self.injector_end_timing_degree = lookup["injector"] 
 
