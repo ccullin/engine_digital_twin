@@ -151,6 +151,8 @@ class EngineModel:
         # 4. Sensors & last_cycle
         # =================================================================
         self.rpm_history = np.zeros(720)
+        self.map_history = np.zeros(720)
+        
         self.sensors_dict = FixedKeyDictionary({
                 "RPM": self.rpm,
                 "rpm_720_history": self.rpm_history,
@@ -165,56 +167,57 @@ class EngineModel:
                 "cam_sync": self.cam_sync,
             })
 
-        self.engine_data_dict = FixedKeyDictionary({  # ONLY UPDATED AT THE END OF EACH 720 CYCLE.
-                "theta": 0,
-                # --- Primary Outputs ---
-                "brake_torque_nm": 0,  # can be either torque_ind or torque_net
-                "brake_power_kw": 0,  # kW (Standard)
-                # 'brake_power_hp': 0,                # hp (Dashboard
-                # --- Fuel/Air/Combustion ---
-                # 'injected_fuel_cc': 0,
-                # 'total_air_kg': 0,
-                # 'air_mass_per_cyl_kg': 0,
-                "peak_pressure_bar": 0,
-                # --- Efficiency and Load Metrics ---
-                # 'bsfc_g_kwh': 0,                    # Brake Specific Fuel Consumption
-                # 've_actual': 0,                     # Requires V_displaced_g_per_cyl calculation in ICE model
-                # 'mean_effective_pressure_bar': 0    # Assumes Indicated MEP is calculated elsewhere
-            })
+        # self.engine_data_dict = FixedKeyDictionary({  # ONLY UPDATED AT THE END OF EACH 720 CYCLE.
+        #         "theta": 0,
+        #         # --- Primary Outputs ---
+        #         "brake_torque_nm": 0,  # can be either torque_ind or torque_net
+        #         "brake_power_kw": 0,  # kW (Standard)
+        #         # 'brake_power_hp': 0,                # hp (Dashboard
+        #         # --- Fuel/Air/Combustion ---
+        #         # 'injected_fuel_cc': 0,
+        #         # 'total_air_kg': 0,
+        #         # 'air_mass_per_cyl_kg': 0,
+        #         "peak_pressure_bar": 0,
+        #         # --- Efficiency and Load Metrics ---
+        #         # 'bsfc_g_kwh': 0,                    # Brake Specific Fuel Consumption
+        #         # 've_actual': 0,                     # Requires V_displaced_g_per_cyl calculation in ICE model
+        #         # 'mean_effective_pressure_bar': 0    # Assumes Indicated MEP is calculated elsewhere
+        #     })
         
         
-        # self.engine_data_dict = FixedKeyDictionary({
-        #     # "theta": self.current_cycle,  # or total cycles — for time/progress
+        self.engine_data_dict = FixedKeyDictionary({
+            "theta": 0,
 
-        #     # Primary performance outputs
-        #     "brake_torque_avg_nm": np.mean(self.torque_brake_720),
-        #     "brake_power_avg_kw": np.mean(self.torque_brake_720) * np.mean(self.rpm_history) / 9549.0,  # approximate, or compute properly
+            # Primary performance outputs
+            "torque_history": self.torque_brake_720,
+            "rpm_history": self.rpm_history,
+            # "brake_power_avg_kw": np.mean(self.torque_brake_720) * np.mean(self.rpm_history) / 9549.0,  # approximate, or compute properly
 
-        #     # Air / Fuel / Combustion (very useful for idle learning)
-        #     # "air_mass_cycle_kg": self._cylinder_total_air_mass_kg,          # if you track it
-        #     "air_mass_per_cyl_kg": self._cylinder_total_air_mass_kg,          # per cylinder average
-        #     # "injected_fuel_per_cyl_cc": total_fuel_injected_cc,     # total over 720°
-        #     # "actual_AFR_cycle": total_air_kg / (total_fuel_kg) if total_fuel_kg > 0 else 14.7,
+            # Air / Fuel / Combustion (very useful for idle learning)
+            # "air_mass_cycle_kg": self._cylinder_total_air_mass_kg,          # if you track it
+            "air_mass_per_cyl_kg": self._cylinder_total_air_mass_kg,          # per cylinder average
+            # "injected_fuel_per_cyl_cc": total_fuel_injected_cc,     # total over 720°
+            # "actual_AFR_cycle": total_air_kg / (total_fuel_kg) if total_fuel_kg > 0 else 14.7,
 
-        #     # Pressure and efficiency
-        #     # "peak_pressure_bar": np.max(self.cylinder_pressure_history),
-        #     # "mean_piston_speed_m_s": calculate from RPM and stroke,
-        #     # "ve_percent": (actual_air_mass / theoretical_air_mass) * 100,  # if you can compute
+            # Pressure and efficiency
+            # "peak_pressure_bar": np.max(self.cylinder_pressure_history),
+            # "mean_piston_speed_m_s": calculate from RPM and stroke,
+            # "ve_percent": (actual_air_mass / theoretical_air_mass) * 100,  # if you can compute
 
-        #     # Smoothness and stability metrics (gold for idle control)
-        #     "rpm_avg_720": np.mean(self.rpm_history),
-        #     "rpm_std_720": np.std(self.rpm_history),
-        #     "rpm_min_720": np.min(self.rpm_history),
-        #     "rpm_max_720": np.max(self.rpm_history),
+            # Smoothness and stability metrics (gold for idle control)
+            # "rpm_avg_720": np.mean(self.rpm_history),
+            # "rpm_std_720": np.std(self.rpm_history),
+            # "rpm_min_720": np.min(self.rpm_history),
+            # "rpm_max_720": np.max(self.rpm_history),
 
-        #     # Load / disturbance indicators
-        #     # "map_avg_kPa": np.mean(self.map_history_720),
-        #     "torque_std_nm": np.std(self.torque_brake_720),
+            # Load / disturbance indicators
+            "map_avg_kPa": np.mean(self.map_history),
+            "torque_std_nm": np.std(self.torque_brake_720),
 
-        #     # Optional advanced
-        #     # "bsfc_g_kwh": fuel_consumption / power if power > 0 else 0,
-        #     # "friction_torque_nm": estimated friction loss,
-        # })
+            # Optional advanced
+            # "bsfc_g_kwh": fuel_consumption / power if power > 0 else 0,
+            # "friction_torque_nm": estimated friction loss,
+        })
 
         self.log = {"P": [], "V": [], "T": []}
 
@@ -238,7 +241,40 @@ class EngineModel:
 
         # ----------------------------------------------------------------------
 
-    def get_data(self):
+    def get_engine_data(self):
+        self.engine_data_dict.update({
+            "theta": self.current_theta,
+
+            # Primary performance outputs
+            "torque_history": self.torque_brake_720,
+            # "brake_power_avg_kw": np.mean(self.torque_brake_720) * np.mean(self.rpm_history) / 9549.0,  # approximate, or compute properly
+            "rpm_history": self.rpm_history,
+
+            # Air / Fuel / Combustion (very useful for idle learning)
+            # "air_mass_cycle_kg": self._cylinder_total_air_mass_kg,          # if you track it
+            "air_mass_per_cyl_kg": self._cylinder_total_air_mass_kg,          # per cylinder average
+            # "injected_fuel_per_cyl_cc": total_fuel_injected_cc,     # total over 720°
+            # "actual_AFR_cycle": total_air_kg / (total_fuel_kg) if total_fuel_kg > 0 else 14.7,
+
+            # Pressure and efficiency
+            # "peak_pressure_bar": np.max(self.cylinder_pressure_history),
+            # "mean_piston_speed_m_s": calculate from RPM and stroke,
+            # "ve_percent": (actual_air_mass / theoretical_air_mass) * 100,  # if you can compute
+
+            # Smoothness and stability metrics (gold for idle control)
+            # "rpm_avg_720": np.mean(self.rpm_history),
+            # "rpm_std_720": np.std(self.rpm_history),
+            # "rpm_min_720": np.min(self.rpm_history),
+            # "rpm_max_720": np.max(self.rpm_history),
+
+            # Load / disturbance indicators
+            "map_avg_kPa": np.mean(self.map_history),
+            "torque_std_nm": np.std(self.torque_brake_720),
+
+            # Optional advanced
+            # "bsfc_g_kwh": fuel_consumption / power if power > 0 else 0,
+            # "friction_torque_nm": estimated friction loss,
+        })
         return self.engine_data_dict
 
     # =================================================================
@@ -278,29 +314,39 @@ class EngineModel:
         # 2.5% → ~38 kPa (typical idle)
         # 100% → 99+ kPa (WOT)
         tps_frac = np.clip(effective_tps / 100.0, 0.0, 1.0)
+        tps_frac_low = effective_tps / 20.0 if effective_tps < 20.0 else 1.0
+
+        # if effective_tps < 20.0:
+        #     # More sensitive in 0–10%, flatter above — better resolution for PID/RL
+        #     map_kPa = c.P_ATM_PA * (0.29 + 0.21 * tps_frac_low**1.8)  # ~29 kPa at 0%, ~45 kPa at 20%
+        # else:
+        #     # Smooth transition above idle range
+        #     tps_frac = effective_tps / 100.0
+        #     map_kPa = c.P_ATM_PA * (0.45 + 0.55 * tps_frac**1.4)
         
         if effective_tps < 20.0:
             # Deep vacuum at closed + small idle bypass
-            map_kPa = c.P_ATM_PA * (0.30 + 0.20 * (effective_tps / 20.0)**2)  # 30 kPa at 0%, ~50 kPa at 20%
+            map_kPa = c.P_ATM_PA * (0.30 + 0.20 * tps_frac_low**2)  # 30 kPa at 0%, ~50 kPa at 20%
         else:
             # Transition to linear/full above idle range
             map_kPa = c.P_ATM_PA * (0.50 + 0.50 * tps_frac**1.3)        
         
         engine_running = True if self.rpm > 600 else False
         self.P_manifold = map_kPa
+        self.map_history[int(self.current_theta)] = map_kPa
 
         # Run physics for this ONE degree
         self._step_one_degree(ecu_outputs, engine_running)
 
         # Update sensors
-        self.sensors_dict.update(
-            {
-                "RPM": self.rpm,
-                "MAP_kPa": self.P_manifold / 1000.0,
-                "crank_pos": self.crank_tooth,
-                "cam_sync": self.cam_sync,
-            }
-        )
+        # self.sensors_dict.update(
+        #     {
+        #         "RPM": self.rpm,
+        #         "MAP_kPa": self.P_manifold / 1000.0,
+        #         "crank_pos": self.crank_tooth,
+        #         "cam_sync": self.cam_sync,
+        #     }
+        # )
 
         # Increment theta and check for end of cycle
         self.next_theta = (self.current_theta + 1.0) % 720.0
@@ -309,8 +355,9 @@ class EngineModel:
         ):  # this is the last cycle has completed and the next cycle is 0
             self._cycle_count += 1
 
-        return self.sensors_dict, self.engine_data_dict
-
+        # return self.sensors_dict, self.engine_data_dict
+        return self.get_sensors(), self.get_engine_data()
+    
     # ----------------------------------------------------------------------
     def _step_one_degree(self, ecu_outputs, engine_running):
         """
@@ -404,17 +451,17 @@ class EngineModel:
                 power_kw = T_net_720 * self.rpm * np.pi / (30.0 * 1000.0)  # kW
 
                 # update data for logging and dashboard
-                self.engine_data_dict.update({
-                        "theta": self.current_theta,
-                        "brake_torque_nm": self.torque_brake,
-                        # "brake_torque_nm": T_net_720,
-                        # 'torque_brake_nm': T_brake_720,
-                        # 'torque_net': T_net_720,
-                        "brake_power_kw": power_kw,
-                        # 'air_mass_per_cyl_kg': self._cylinder_total_air_mass_kg,
-                        # 'injected_fuel_cc': self._cycle_fuel_injected_cc,
-                        "peak_pressure_bar": (max(self.log["P"]) / 1e5 if self.log["P"] else 1.0),
-                    })
+                # self.engine_data_dict.update({
+                #         "theta": self.current_theta,
+                #         "brake_torque_nm": self.torque_brake,
+                #         # "brake_torque_nm": T_net_720,
+                #         # 'torque_brake_nm': T_brake_720,
+                #         # 'torque_net': T_net_720,
+                #         "brake_power_kw": power_kw,
+                #         # 'air_mass_per_cyl_kg': self._cylinder_total_air_mass_kg,
+                #         # 'injected_fuel_cc': self._cycle_fuel_injected_cc,
+                #         "peak_pressure_bar": (max(self.log["P"]) / 1e5 if self.log["P"] else 1.0),
+                #     })
 
                 # ======== PRINT END OF CYCLE SUMMARY =========
                 # print(

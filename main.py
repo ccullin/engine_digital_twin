@@ -65,7 +65,7 @@ if __name__ == "__main__":
     dashboard_manager = None
 
     if not args.debug:
-        logger = Logger(engine.get_sensors(), engine.get_data(), ecu.get_outputs())
+        logger = Logger(engine.get_sensors(), engine.get_engine_data(), ecu.get_outputs())
         dashboard_manager = DashboardManager()  
         
     # Give the current strategy access to the dashboard

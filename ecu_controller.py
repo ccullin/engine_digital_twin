@@ -21,10 +21,13 @@ class ECUController:
     It determines control outputs (Spark, AFR, Idle Valve Position) based on sensor inputs.
     """
     
-    def __init__(self, rl_idle_mode=False):
-        # used to bypass functions such as _idle_pid to allow training
+    def __init__(self, rl_idle_mode=False, rl_wot_spark_mode=False):
+        
+        # RL bypass variables
         self.rl_idle_mode = rl_idle_mode
         self.external_idle_command = 0.0 # set by RL training functions
+        self.rl_wot_spark_mode = rl_wot_spark_mode
+        self.external_spark_advance = 0.0  # for WOT RL
         
         # EFI Tables and lookup values
         self.tables = EFITables()
@@ -121,11 +124,9 @@ class ECUController:
         This is the single source of truth for all control outputs.
         """
   
-        # =================================================================
-        # 1. Sensor inputs
-        # =================================================================
+        # 1. extract sensor inputs
         RPM = sensors["RPM"]
-        rpm_720_history = sensors["rpm_720_history"]
+        rpm_history = sensors["rpm_720_history"]
         MAP_kPa = sensors["MAP_kPa"]
         TPS = sensors["TPS_percent"]
         CLT_C = sensors["CLT_C"]
@@ -134,18 +135,23 @@ class ECUController:
 
         current_rpm_safe = max(RPM, 10.0)
         
-        # =================================================================
-        # EFI Tables
-        # =================================================================
-        lookup = self.tables.lookup(RPM, MAP_kPa)
-        self.ve_fraction = lookup["ve"] / 100  # convert from deg to fraction
-        self.spark_advance_btdc = lookup["spark"]
-        self.afr_target = lookup["afr"]
-        self.injector_end_timing_degree = lookup["injector"] 
+        # 2. Subsystems
+        self._sync_timing(crank_pos, cam_pulse)
+        self._lookup_tables(RPM, MAP_kPa)
+        self._calculate_spark_timing()
+        self._calculate_fuel_delivery(MAP_kPa, c.T_INTAKE_K, RPM)
+        self._calculate_idle_valve(TPS, RPM, rpm_history, CLT_C)
+        if self.rl_wot_spark_mode:
+            self.spark_advance_btdc = self.external_spark_advance  # RL override
 
-        # =================================================================
-        # Engine Timing Sync
-        # =================================================================
+        # 3. Build outputs
+        return self.get_outputs()
+    
+        
+
+    # ---------------------------------------------------------------------
+    def _sync_timing(self, crank_pos, cam_pulse):
+        """Handle crank/cam sync and theta calculation."""
 
         cam_rising_edge = False
         cam_rising_edge = not cam_rising_edge and cam_pulse
@@ -166,27 +172,38 @@ class ECUController:
             self.calculated_theta = (self.calculated_theta + 1) % 720.0
             if self.calculated_theta % 720 == 0:
                 self.cycle += 1
+                
+    # ---------------------------------------------------------------------
+    def _calculate_idle_valve(self, TPS, RPM, rpm_history, CLT_C):
+        """Idle valve control — uses PID or external command."""
 
-        # =================================================================
-        # 2. Idle valve control (ECU owns this)
-        # =================================================================
         if self.rl_idle_mode:
             # RL mode: do NOTHING here — idle valve will be set externally
             idle_valve_position = self.external_idle_command  # set by RL env
         else:
             # Normal mode: use PID
-            idle_valve_position = self._idle_pid(TPS, RPM, rpm_720_history, CLT_C)
+            idle_valve_position = self._idle_pid(TPS, RPM, rpm_history, CLT_C)
         
         self.idle_valve_position = idle_valve_position
-
-        # =================================================================
-        # 3. Effective throttle = driver pedal + idle valve
-        # =================================================================
+        
         effective_tps = np.clip(TPS + idle_valve_position, 0.0, 100.0)
+        
+    
+    # ---------------------------------------------------------------------
+    def _lookup_tables(self, RPM, MAP_kPa):
+        """EFI table lookups (VE, spark, AFR, injector timing)."""
+        
+        # =================================================================
+        # EFI Tables
+        # =================================================================
+        lookup = self.tables.lookup(RPM, MAP_kPa)
+        self.ve_fraction = lookup["ve"] / 100  # convert from deg to fraction
+        self.spark_advance_btdc = lookup["spark"]
+        self.afr_target = lookup["afr"]
+        self.injector_end_timing_degree = lookup["injector"] 
 
-        # =================================================================
-        # 4. Spark advance (2D table)
-        # =================================================================
+    def _calculate_spark_timing(self):
+        """Determine if spark should fire this degree."""
 
         # self.spark_advance_btdc = float(self.spark_interp([RPM, MAP_kPa]))
         # Convert to 720° domain for engine
@@ -196,129 +213,43 @@ class ECUController:
         spark_this_degree = (
             self.last_calculated_theta < spark_fire_angle_720 <= self.calculated_theta
         )
-
-        # print(f"{self.last_calculated_theta:3.3f} <= {spark_fire_angle_720:3.3f} <= {self.calculated_theta:3.3f}  sparke_now={spark_this_degree:3.3f}")
-
+        
         if spark_this_degree and not self.fuel_cut_active:
             self.spark_active = True
         else:
             self.spark_active = False
+    
+    def _calculate_fuel_delivery(self, MAP_kPa, T_intake_K, RPM):
+        """Calculate trapped air, required fuel, and injector timing."""
 
-        # =================================================================
-        # 5. Target AFR (2D table + WOT enrichment)
-        # =================================================================
-        # afr_target = float(self.afr_interp([RPM, MAP_kPa]))
-        # should the WOT enrichment be retained.  This may complicate RL
-        # if effective_tps > 90.0:
-        #     afr_target = np.clip(afr_target, 11.8, 12.8)
-        # self.afr_target = afr_target
+        # Trapped air
+        self.trapped_air_mass_kg = self._calculate_trapped_air_mass(MAP_kPa, c.T_INTAKE_K, self.ve_fraction, RPM)
 
-        # =================================================================
-        # 6. Volumetric Efficiency (2D table)
-        # =================================================================
-        # self.ve_fraction = float(self.ve_interp([RPM, MAP_kPa])) / 100
-
-        # =================================================================
-        # 7. Trapped air mass — speed-density (per cylinder)
-        # =================================================================
-        self.trapped_air_mass_kg = self._calculate_trapped_air_mass(
-            MAP_kPa, c.T_INTAKE_K, self.ve_fraction, RPM
-        )
-
-        # =================================================================
-        # 8. Required fuel mass
-        # =================================================================
+        # Required fuel
         _required_fuel_kg = self.trapped_air_mass_kg / self.afr_target
-        # self._required_fuel_g = required_fuel_g
         _required_fuel_vol_cc = _required_fuel_kg / c.FUEL_DENSITY_KG_CC
 
-        # if self.calculated_theta == 180: # end of intake
-        #     print(f"Mair = {self.trapped_air_mass_kg:6.4f}kg | "
-        #         f"reqd fuel (kg): {_required_fuel_kg:4.2e} | "
-        #         f"reqd fuel (cc) = {_required_fuel_vol_cc:6.4f} | "
-        #         f"MAP = {MAP_kPa:6.4f} | "
-
-        #         )
-
-        # =================================================================
-        # 9. Injector pulse width
-        # =================================================================
-
-        _injector_pw_msec = (
-            _required_fuel_vol_cc / c.INJECTOR_FLOW_CC_PER_MIN
-        ) * 60_000
+        # Injector pulse width in degrees
+        _injector_pw_msec = (_required_fuel_vol_cc / c.INJECTOR_FLOW_CC_PER_MIN) * 60_000
         _injector_pw_degree = _injector_pw_msec * 360 * RPM / 60_000
-
-        # print(
-        #     f"trapped air: {self.trapped_air_mass_kg} | "
-        #     f"taregt AFR: {afr_target} | "
-        #     f"required fuel g {_required_fuel_kg} | "
-        #     f"required fuel cc: {_required_fuel_vol_cc} | "
-        #     f"injector pw ms: {_injector_pw_msec} | "
-        #     )
 
 
         # SOI is EOI minus PW, then wrap-around if necessary
-        self.injector_start_timing_degree = (
-            self.injector_end_timing_degree - _injector_pw_degree
-        ) % 720.0
-        # self.injector_end_timing_degree = _injector_end_timing_degree % 720
-
-        # print(
-        #     f"injector start: {self.injector_start_timing_degree} | "
-        #     f"injector end: {_injector_end_timing_degree} | "
-        #     f"injector timing: {_injector_pw_degree} | "
-        # )
-
+        self.injector_start_timing_degree = (self.injector_end_timing_degree - _injector_pw_degree) % 720.0
         self.injector_is_active = False
-        # if int(self.injector_start_timing_degree) <= self.calculated_theta < self.injector_end_timing_degree:
-        #     self.injector_is_active = True if not self.fuel_cut_active else False
 
         if not self.fuel_cut_active:
-            # 1. Determine if the injection event wraps around the 720/0 degree boundary
-            is_wrapping = (
-                self.injector_start_timing_degree > self.injector_end_timing_degree
-            )
-
-            # Get the current crank angle (theta) safely
+            # Injector active this degree?
             current_theta = self.calculated_theta % 720.0
+            is_wrapping = (self.injector_start_timing_degree > self.injector_end_timing_degree)
 
-            # 2. Check Activation
             if is_wrapping:
-                # Case A: Injection crosses the 720/0 boundary (Start > End)
-                # We are active if (theta >= Start) OR (theta < End)
-                if (current_theta >= self.injector_start_timing_degree) or (
-                    current_theta < self.injector_end_timing_degree
-                ):
-                    self.injector_is_active = True
+                active = (current_theta >= self.injector_start_timing_degree) or (current_theta < self.injector_end_timing_degree)
             else:
-                # Case B: Standard injection (Start <= End)
-                # We are active if (theta >= Start) AND (theta < End)
-                if (current_theta >= self.injector_start_timing_degree) and (
-                    current_theta < self.injector_end_timing_degree
-                ):
-                    self.injector_is_active = True
-                    
+                active = (current_theta >= self.injector_start_timing_degree) and (current_theta < self.injector_end_timing_degree)
 
-        # =================================================================
-        # 12. Return outputs
-        # =================================================================
+            self.injector_is_active = active and not self.fuel_cut_active
 
-        # print(
-        #     f"cycle = {self.cycle:2.0f} | "
-        #     f"theta = {self.calculated_theta:5.0f} | "
-        #     f"RPM = {RPM:3.0f} | "
-        #     f"MAP = {MAP_kPa:3.0f} | "
-        #     f"spark = {spark_fire_angle_720:5.0f} | "
-        #     f"afr_target = {self.afr_target:4.1f} | "
-        #     f"ve_fraction = {self.ve_fraction:5.1f} | "
-        #     f"reqd_fuel = {self._required_fuel_g * 1000:4.1f}mg | "
-        #     f"pulse_width = {pw_in_degrees:4.1f} | "
-        #     f"str={self.injector_start_deg:4.0f} | "
-        #     f"end={self.injector_end_deg:4.0f} | "
-        # )
-
-        return self.get_outputs()
 
     # -----------------------------------------------------------------------------------------
     def _idle_pid(self, TPS_percent, RPM, rpm_history, CLT_C):
