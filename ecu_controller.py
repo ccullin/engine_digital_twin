@@ -24,10 +24,15 @@ class ECUController:
     def __init__(self, rl_idle_mode=False, rl_wot_spark_mode=False):
         
         # RL bypass variables
+        """
+        rl_idle_mode:       If True, bypasses internal PID and uses external_idle_command
+        rl_wot_spark_mode:  If True, bypasses spark table lookup and uses external_spark_advance
+        """
         self.rl_idle_mode = rl_idle_mode
-        self.external_idle_command = 0.0 # set by RL training functions
         self.rl_wot_spark_mode = rl_wot_spark_mode
-        self.external_spark_advance = 0.0  # for WOT RL
+
+        self.external_idle_command = 0.0      # used when rl_idle_mode=True
+        self.external_spark_advance = 0.0     # used when rl_wot_spark_mode=True
         
         # EFI Tables and lookup values
         self.tables = EFITables()
@@ -138,11 +143,13 @@ class ECUController:
         # 2. Subsystems
         self._sync_timing(crank_pos, cam_pulse)
         self._lookup_tables(RPM, MAP_kPa)
+        # RL spark override
+        if self.rl_wot_spark_mode:
+            self.spark_advance_btdc = self.external_spark_advance  # RL override
+            
         self._calculate_spark_timing()
         self._calculate_fuel_delivery(MAP_kPa, c.T_INTAKE_K, RPM)
         self._calculate_idle_valve(TPS, RPM, rpm_history, CLT_C)
-        if self.rl_wot_spark_mode:
-            self.spark_advance_btdc = self.external_spark_advance  # RL override
 
         # 3. Build outputs
         return self.get_outputs()
@@ -193,15 +200,13 @@ class ECUController:
     def _lookup_tables(self, RPM, MAP_kPa):
         """EFI table lookups (VE, spark, AFR, injector timing)."""
         
-        # =================================================================
-        # EFI Tables
-        # =================================================================
         lookup = self.tables.lookup(RPM, MAP_kPa)
         self.ve_fraction = lookup["ve"] / 100  # convert from deg to fraction
         self.spark_advance_btdc = lookup["spark"]
         self.afr_target = lookup["afr"]
         self.injector_end_timing_degree = lookup["injector"] 
 
+    # ---------------------------------------------------------------------
     def _calculate_spark_timing(self):
         """Determine if spark should fire this degree."""
 
@@ -219,6 +224,7 @@ class ECUController:
         else:
             self.spark_active = False
     
+    # ---------------------------------------------------------------------
     def _calculate_fuel_delivery(self, MAP_kPa, T_intake_K, RPM):
         """Calculate trapped air, required fuel, and injector timing."""
 

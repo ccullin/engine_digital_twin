@@ -16,26 +16,26 @@ class EFITables:
         self.map_bins = np.array([30, 50, 75, 95, 105, 150])  # kPa
 
         # === VE Table: Current, Safe Default, Min/Max Bounds ===
-        self.ve_table = self._prooven_ve_table()
-        # self.ve_table = self._learned_ve_table()
+        # self.ve_table = self._prooven_ve_table()
+        self.ve_table = self._learned_ve_table()
         self.ve_min = self._ve_min_bounds()
         self.ve_max = self._ve_max_bounds()
 
         # === Spark Table (BTDC) ===
-        self.spark_table = self._prooven_spark_table()
-        # self.spark_table = self._learned_spark_table()
+        # self.spark_table = self._prooven_spark_table()
+        self.spark_table = self._learned_spark_table()
         self.spark_min = self._spark_min_bounds()
         self.spark_max = self._spark_max_bounds()
 
         # === AFR Target Table ===
-        self.afr_table = self._prooven_afr_table()
-        # self.afr_table = self._learned_afr_table()
+        # self.afr_table = self._prooven_afr_table()
+        self.afr_table = self._learned_afr_table()
         self.afr_min = self._afr_min_bounds()
         self.afr_max = self._afr_max_bounds()
         
         # === Injector Timing Table ===
-        self.injector_table = self._prooven_injector_table()
-        # self.injector_table = self._learned_injector_table()
+        # self.injector_table = self._prooven_injector_table()
+        self.injector_table = self._learned_injector_table()
         self.injector_min = self._injector_min_bounds()
         self.injector_max = self._injector_max_bounds()
         
@@ -89,12 +89,12 @@ class EFITables:
     # =========================================================================
     def _prooven_ve_table(self):
         return np.array([
-            [100, 100, 100, 100, 100, 100],  # 100 rpm (Low Cranking VE)
-            [ 70,  50,  60,  70,  75,  75],  # 600 rpm
-            [ 50,  70,  85,  95, 100, 100],  # 2000 rpm
-            [ 55,  80,  95, 102, 105, 105],  # 4000 rpm
-            [ 60,  75,  90,  98, 102, 102],  # 6000 rpm
-            [ 50,  65,  80,  90,  95,  95],  # 8000 rpm
+            [40, 100, 100, 100, 100, 100],  # 100 rpm (Low Cranking VE)
+            [ 40,  50,  60,  70,  75,  75],  # 600 rpm
+            [ 40,  70,  85,  95, 100, 100],  # 2000 rpm
+            [ 40,  80,  95, 102, 105, 105],  # 4000 rpm
+            [ 40,  75,  90,  98, 102, 102],  # 6000 rpm
+            [ 40,  65,  80,  90,  95,  95],  # 8000 rpm
         ])
 
     def _prooven_spark_table(self):
