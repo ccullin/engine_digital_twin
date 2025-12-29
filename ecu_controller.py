@@ -21,18 +21,18 @@ class ECUController:
     It determines control outputs (Spark, AFR, Idle Valve Position) based on sensor inputs.
     """
     
-    def __init__(self, rl_idle_mode=False, rl_wot_spark_mode=False):
+    def __init__(self, rl_idle_mode=False, rl_ecu_spark_mode=False):
         
         # RL bypass variables
         """
         rl_idle_mode:       If True, bypasses internal PID and uses external_idle_command
-        rl_wot_spark_mode:  If True, bypasses spark table lookup and uses external_spark_advance
+        rl_ecu_spark_mode:  If True, bypasses spark table lookup and uses external_spark_advance
         """
         self.rl_idle_mode = rl_idle_mode
-        self.rl_wot_spark_mode = rl_wot_spark_mode
+        self.rl_ecu_spark_mode = rl_ecu_spark_mode
 
         self.external_idle_command = 0.0      # used when rl_idle_mode=True
-        self.external_spark_advance = 0.0     # used when rl_wot_spark_mode=True
+        self.external_spark_advance = 0.0     # used when rl_ecu_spark_mode=True
         
         # EFI Tables and lookup values
         self.tables = EFITables()
@@ -91,6 +91,7 @@ class ECUController:
         self.output_dict = FixedKeyDictionary(
             {
                 "spark": self.spark_active,
+                "spark_timing": self.spark_advance_btdc,
                 "afr_target": self.afr_target,
                 "idle_valve_position": self.idle_valve_position,
                 "trapped_air_mass_kg": self.trapped_air_mass_kg,
@@ -109,6 +110,7 @@ class ECUController:
         self.output_dict.update(
             {
                 "spark": self.spark_active,
+                "spark_timing": self.spark_advance_btdc,
                 "afr_target": self.afr_target,
                 "idle_valve_position": self.idle_valve_position,
                 "trapped_air_mass_kg": self.trapped_air_mass_kg,
@@ -197,7 +199,7 @@ class ECUController:
         lookup = self.tables.lookup(RPM, MAP_kPa)
         self.ve_fraction = lookup["ve"] / 100  # converted to fraction
         
-        if self.rl_wot_spark_mode:
+        if self.rl_ecu_spark_mode:
             self.spark_advance_btdc = self.external_spark_advance # RL spark override
         else: 
             self.spark_advance_btdc = lookup["spark"]
@@ -212,7 +214,8 @@ class ECUController:
         # self.spark_advance_btdc = float(self.spark_interp([RPM, MAP_kPa]))
         # Convert to 720° domain for engine
         spark_fire_angle_720 = 360.0 - self.spark_advance_btdc
-
+        rl_spark = 360.0 - self.external_spark_advance
+        
         # Only fire spark at the exact degree
         spark_this_degree = (
             self.last_calculated_theta < spark_fire_angle_720 <= self.calculated_theta
@@ -222,7 +225,7 @@ class ECUController:
             self.spark_active = True
         else:
             self.spark_active = False
-    
+
     # ---------------------------------------------------------------------
     def _calculate_fuel_delivery(self, MAP_kPa, T_intake_K, RPM):
         """Calculate trapped air, required fuel, and injector timing."""

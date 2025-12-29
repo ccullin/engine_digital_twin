@@ -204,7 +204,14 @@ class DynoStrategy(BaseStrategy):
     DYNO_RPM_TOLERANCE = 5.0
     SETTLE_CYCLES_REQUIRED = 1 * 720  # it is measured in degrees
            
-    def __init__(self):
+    def __init__(self, rl_dyno_mode=False):
+        super().__init__()
+        
+        # rl support
+        self.rl_dyno_mode = rl_dyno_mode
+        self.external_target_rpm = 2000.0  # Controlled by RL
+        self.force_next_step = False       # Flag for RL to trigger data capture
+        
         # pid cycles
         self.in_dyno_sweep = False
         self.settled_cycles = 0
@@ -224,7 +231,7 @@ class DynoStrategy(BaseStrategy):
 
         # pid output
         self.pid_output = 0.0
-        self.dyno_target_rpm = 2000
+        self.dyno_target_rpm = DynoStrategy.DYNO_START_RPM
         self.settled_torque_values = np.zeros(720)
 
         # data for Dyno Chart plot
@@ -244,7 +251,11 @@ class DynoStrategy(BaseStrategy):
         
         
     def driver_update(self, driver):
-        # Dyno-specific TPS logic
+        # inject RL target RPM
+        if self.rl_dyno_mode:
+            self.dyno_target_rpm = self.external_target_rpm
+        
+        # Start DYNO once target rpm reached
         control_rpm = np.mean(driver.cycle_rpm)
         if control_rpm >= (DynoStrategy.DYNO_START_RPM - 100) and control_rpm <= DynoStrategy.DYNO_FINISH_RPM:
             self.in_dyno_sweep = True
@@ -252,22 +263,17 @@ class DynoStrategy(BaseStrategy):
         else:
             self.in_dyno_sweep = False
             tps = 100.0  # keep WOT until end
-
-        
+   
         # Dyno load
         self._set_dyno_target(driver)
-        if self.in_dyno_sweep:
-            load = self._pid_control(driver)
-        else:
-            load = 0.0
-
-        
+        load = self._pid_control(driver) if self.in_dyno_sweep else 0.0
+  
         # print(
         #     f"theta: {driver.cycle:4.0f}/{driver.theta:3.0f} | "
-        #     f"P_err: {self.pid_error_p:5.1f} | "
-        #     f"Integral: {self.pid_error_integral:5.0f} | "
-        #     f"derivative: {self.pid_derivative:5.0f} | "
-        #     f"pid out: {self.pid_output:6.2f} | "
+        #     # f"P_err: {self.pid_error_p:5.1f} | "
+        #     # f"Integral: {self.pid_error_integral:5.0f} | "
+        #     # f"derivative: {self.pid_derivative:5.0f} | "
+        #     # f"pid out: {self.pid_output:6.2f} | "
         #     f"RPM: {driver.rpm:4.0f} | "
         #     f"target_rpm: {self.dyno_target_rpm:4.0f} | "
         #     f"mean_rpm: {np.mean(driver.cycle_rpm):4.0f} | "
@@ -284,84 +290,121 @@ class DynoStrategy(BaseStrategy):
         }   
 
     def _set_dyno_target(self, driver):
-        control_rpm = np.mean(driver.cycle_rpm)
-        error = abs(self.dyno_target_rpm - control_rpm)
         
         if not self.in_dyno_sweep:
             return
+        
+        if self._rpm_stablised(driver): 
+            if self.rl_dyno_mode:
+                self.point_settled = True   # TRIGGER EVENT for RL training: Point is settled
+                self._handle_rl_progression(driver)
+            else:
+                self._handle_automatic_progression(driver)
+            
+    def _rpm_stablised(self, driver):
+        """
+        RPM must be withiin error tolerance for set number of cycles
+        """
+        control_rpm = np.mean(driver.cycle_rpm)
+        error = abs(self.dyno_target_rpm - control_rpm)
         
         # Track peak error for the stabilization period
         if error > self.current_step_peak:
             self.current_step_peak = error
 
-        # Settle detection
+        # Point settle detection
         if error < DynoStrategy.DYNO_RPM_TOLERANCE:
             self.settled_torque_values[self.settled_cycles%720] = self.pid_output
-            self.settled_cycles += 1
+            self.settled_cycles += 1      
         else:
             self.settled_cycles = 0
 
-        # === POINT SETTLED: All criteria met ===
+        # Window settle detection 
         if self.settled_cycles >= DynoStrategy.SETTLE_CYCLES_REQUIRED:
+            rpm_stablised = True
+        else:
+            rpm_stablised = False
+
+        return rpm_stablised
+    
+    
+    def _store_stabilized_data(self):
+        """
+        Clean the data and compute final values for this point
+        """
+        raw_torque = np.mean(self.settled_torque_values)
+        std_dev = np.std(self.settled_torque_values)
+        # Trimmed mean (drop top/bottom 10%)
+        boundary = int(0.10 * DynoStrategy.SETTLE_CYCLES_REQUIRED) #trim 10% top and bottom
+        trimmed = np.sort(self.settled_torque_values)[boundary:-boundary]
+        avg_brake_torque = np.mean(trimmed)
+        avg_power_kW = avg_brake_torque * self.dyno_target_rpm / 9549.0
+        
+        # === STORE CLEAN POINT DATA (for RL env and others) ===
+        self.last_settled_rpm = self.dyno_target_rpm
+        self.last_settled_torque = avg_brake_torque
+        self.last_settled_power = avg_power_kW
+        self.last_settled_std = std_dev
+
+        # Append to curve for dashboard/history
+        self.dyno_curve_data.append((self.dyno_target_rpm, avg_brake_torque, avg_power_kW))
+
+        # Stats tracking
+        self.total_peak_error += self.current_step_peak
+        if self.current_step_peak > self.max_peak_error:
+            self.max_peak_error = self.current_step_peak
+
+   
+    def _handle_rl_progression(self, driver):
+        """
+        Logic for when RL is in control. 
+        It waits for 'force_next_step' to log a data point.
+        """
+        if self.force_next_step:
+            # Store the stablised rpm and torque data
+            self._store_stabilized_data()
+            # Update cycle counters
             self.total_settle_cycles += DynoStrategy.SETTLE_CYCLES_REQUIRED
             self.steps_completed += 1
+            self.force_next_step = False 
+            # Note: We do NOT increment dyno_target_rpm here; 
+            # the RL agent will update external_target_rpm for the next step.
+    
+    
+    def _handle_automatic_progression(self, driver):
+        """
+        Logic for when running in manual dyno mode. 
+        automatically increments RPM target.
+        """
+        
+        # Store the stablised rpm and torque data
+        self._store_stabilized_data()
+        
+        # Update cycle counters
+        self.total_settle_cycles += DynoStrategy.SETTLE_CYCLES_REQUIRED
+        self.steps_completed += 1
 
-            # ------------------------------------------------------------------
-            # Clean the data and compute final values for this point
-            # ------------------------------------------------------------------
-            raw_torque = np.mean(self.settled_torque_values)
-            std_dev = np.std(self.settled_torque_values)
-            # Trimmed mean (drop top/bottom 10%)
-            boundary = int(0.10 * DynoStrategy.SETTLE_CYCLES_REQUIRED) #trim 10% top and bottom
-            trimmed = np.sort(self.settled_torque_values)[boundary:-boundary]
-            avg_brake_torque = np.mean(trimmed)
-            avg_power_kW = avg_brake_torque * self.dyno_target_rpm / 9549.0
-            
-
-
-            # === STORE CLEAN POINT DATA (for RL env and others) ===
-            self.last_settled_rpm = self.dyno_target_rpm
-            self.last_settled_torque = avg_brake_torque
-            self.last_settled_power = avg_power_kW
-            self.last_settled_std = std_dev
-
-            # Append to curve for dashboard/history
-            self.dyno_curve_data.append((self.dyno_target_rpm, avg_brake_torque, avg_power_kW))
-            
-            # print(
-            #     f"target_rpm: {self.dyno_target_rpm:4.0f} | "
-            #     f"trimed torque: {avg_brake_torque:6.0f} | "
-            # )
-
-            # === TRIGGER EVENT for RL traiing: Point is settled ===
-            self.point_settled = True   # not relevant for standalone mode
-
-            # Dashboard update
-            if getattr(driver, 'dashboard_manager', None):
-                ax = driver.dashboard_manager.get_strategy_axes()
-                if ax:
-                    if not hasattr(self, 'line_torque') or self.line_torque is None:
-                        self._create_dyno_plot(ax)
-                    self._update_dyno_plot(ax)
-                    driver.dashboard_manager.draw()
+        # Dashboard update
+        if getattr(driver, 'dashboard_manager', None):
+            ax = driver.dashboard_manager.get_strategy_axes()
+            if ax:
+                if not hasattr(self, 'line_torque') or self.line_torque is None:
+                    self._create_dyno_plot(ax)
+                self._update_dyno_plot(ax)
+                driver.dashboard_manager.draw()
                     
-            # Stats tracking
-            self.total_peak_error += self.current_step_peak
-            if self.current_step_peak > self.max_peak_error:
-                self.max_peak_error = self.current_step_peak
+        # Prepare for next point
+        self.settled_cycles = 0
+        self.current_step_peak = 0.0
+        self.settled_torque_values.fill(0)  # optional: clear array
 
-            # === PREPARE FOR NEXT POINT ===
-            self.settled_cycles = 0
-            self.current_step_peak = 0.0
-            self.settled_torque_values.fill(0)  # optional: clear array
-
-            # Advance target
-            if self.dyno_target_rpm < DynoStrategy.DYNO_FINISH_RPM:
-                self.dyno_target_rpm += DynoStrategy.DYNO_STEP_SIZE_RPM
-            else:
-                self.in_dyno_sweep = False
-                self.dyno_complete = True
-                driver.tps = 0.0
+        # Advance rpm target
+        if self.dyno_target_rpm < DynoStrategy.DYNO_FINISH_RPM:
+            self.dyno_target_rpm += DynoStrategy.DYNO_STEP_SIZE_RPM
+        else:
+            self.in_dyno_sweep = False
+            self.dyno_complete = True
+            driver.tps = 0.0
 
     def _pid_control(self, driver):
         instant_rpm = driver.rpm

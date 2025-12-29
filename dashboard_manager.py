@@ -98,7 +98,7 @@ class DashboardManager:
             "─ ECU Outputs ─",
             f"Idle Valve:     {ecu_outputs_dict['idle_valve_position']:8.1f} %",
             f"ve_fraction:    {ecu_outputs_dict['ve_fraction']:8.2f}",
-            f"Ignition Adv:   {ecu_outputs_dict['spark']:8.1f} °BTDC",
+            f"Ignition Adv:   {ecu_outputs_dict['spark_timing']:8.1f} °BTDC",
             f"Target AFR:     {ecu_outputs_dict['afr_target']:8.2f}",
         ]
 
@@ -135,6 +135,10 @@ class DashboardManager:
     #         self.figures[key] = create_func()
     #     update_func(self.figures[key], data)
 
+    def show(self):
+        plt.ioff()
+        plt.show()
+    
     def draw(self):
         if self.enabled and self.fig:
             try:

@@ -32,7 +32,7 @@ NUM_CYL = 4
 INJECTOR_FLOW_CC_PER_MIN = 500.0  # Injector flow rate in cc/min
 FUEL_DENSITY_KG_CC = 7.5e-4  # Fuel density in kg/cc
 INJECTOR_DEAD_TIME_MS = 0.0  # MUST BE ZERO as the digital ICE MODEL has no lag.
-BURN_DURATION_DEG = 30.0
+BURN_DURATION_DEG = 50.0
 
 # =================================== ENVIRONMENT & INITIAL CONDITIONS ==========
 P_ATM_PA = 101325.0  # at sea level (Pa)
@@ -42,6 +42,7 @@ T_EXHAUST_K = 900.0
 T_WALL = 450.0
 COOLANT_START = 20.0
 CRANK_RPM = 250.0
+FUEL_OCTANE = 95
 
 
 # =================================== RPM LIMITS ======================================

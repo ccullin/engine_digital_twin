@@ -668,3 +668,93 @@ def update_knock(last_cycle, clt):
     if peak_bar > 65 and clt < 95:
         return min(100.0, (peak_bar - 60) ** 2.5)
     return 0.0
+
+def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
+    """
+    Refined knock detection for higher-fidelity Wiebe physics.
+    Now accounts for RPM and Fuel Octane.
+    """
+    # 1. Base threshold scaled for realistic Wiebe Pmax
+    # A safe Pmax for a 10:1 CR N/A engine is around 100 bar.
+    base_threshold = 105.0 
+    
+    # 2. Octane Correction (Every point of Octane is worth ~2 bar of tolerance)
+    # Baseline is 95 RON. 
+    octane_offset = (fuel_octane - 95.0) * 2.5
+    
+    # 3. RPM Sensitivity (High RPM reduces time for knock to occur)
+    # Every 1000 RPM adds ~3 bar of pressure tolerance
+    rpm_safety = (rpm / 1000.0) * 3.0
+
+    # 4. Thermal & Chemistry Factors (Preserving your logic with better scaling)
+    # CLT protection
+    cold_protection = max(0.0, (90.0 - clt) * 1.5) if clt < 90 else 0.0
+    
+    # Rich mixture cooling (Lambda < 1.0)
+    rich_safety = max(0.0, (1.0 - lambda_) * 40.0) 
+    
+    # Spark Penalty (If you push way past typical MBT limits)
+    advance_penalty = max(0.0, (spark_advance - 32.0) * 1.5)
+
+    # 5. Calculate Final Threshold
+    knock_threshold_bar = (
+        base_threshold 
+        + octane_offset 
+        + rpm_safety 
+        + cold_protection 
+        + rich_safety 
+        - advance_penalty
+    )
+
+    # 6. Result Calculation
+    pressure_ratio = peak_bar / knock_threshold_bar
+
+    if pressure_ratio > 1.0:
+        knock_detected = True
+        # Intensity scales exponentially (1.1 ratio = slight knock, 1.3 = engine damage)
+        knock_intensity = (pressure_ratio - 1.0) * 20.0 
+    else:
+        knock_detected = False
+        knock_intensity = 0.0
+        
+    return knock_detected, knock_intensity
+
+def calc_indicated_torque_step(delta_work_J, stroke):
+    """
+    Calculates instantaneous torque for a single degree step.
+    Ensures negative torque during the intake (pumping) stroke.
+    """
+    # Convert 1.0 degree to radians (based on c.THETA_DELTA)
+    theta_delta_rad = c.THETA_DELTA * (np.pi / 180.0)
+    torque_raw = delta_work_J / theta_delta_rad
+
+    if stroke == "intake":
+        return -abs(torque_raw)
+    return torque_raw
+
+def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):
+    """
+    Calculates the instantaneous heat release (Joules/degree) using the Wiebe function.
+    """
+    # a=5.0 and m=2.0 are standard for spark-ignition engines
+    a = 5.0
+    m = 2.0
+    
+    # Normalized progress through the burn (0.0 to 1.0)
+    delta_theta = theta - theta_start
+    
+    if delta_theta < 0 or delta_theta > duration:
+        return 0.0
+    
+    # Normalized position
+    y = delta_theta / duration
+    
+    # Wiebe Mass Fraction Burned (MFB) derivative: dXb/dtheta
+    # This gives us the fraction of total heat released during THIS degree
+    term1 = a * (m + 1) / duration
+    term2 = y**m
+    term3 = np.exp(-a * y**(m + 1))
+    
+    dxb_dtheta = term1 * term2 * term3
+    
+    return dxb_dtheta * total_heat_J

@@ -109,5 +109,7 @@ if __name__ == "__main__":
             if logger:
                 logger.close()
             if dashboard_manager:
-                dashboard_manager.close()  # clean shutdown
+                # dashboard_manager.close()  # clean shutdown
+                print("Simulation complete. Close the plot window to exit.")
+                dashboard_manager.show() # leave plot open.
         print("Real-time simulation complete.")
