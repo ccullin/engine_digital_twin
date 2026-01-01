@@ -12,7 +12,7 @@ import driver_strategies as strategies
 
 class DriverInput:
 
-    def __init__(self, mode="idle"):
+    def __init__(self, mode="idle", start_rpm=900):
         self.rpm = 0
         self.cycle = 0 # crank cycle number , which is 720 degrees of rotation
         self.theta = 0 # crank degree of rotation 0-719
@@ -22,7 +22,7 @@ class DriverInput:
         self.tps = 0.0  # foot off the accelerator
         self.load = 0.0  # sitting in neutral
         self.air_pressure = c.P_ATM_PA # sea level
-        self.cycle_rpm = np.zeros(720) # array of the RPM measured at each theta (crank degree)
+        self.cycle_rpm = np.full(720, start_rpm) # array of the RPM measured at each theta (crank degree)
         
         self.strategy = self._create_strategy(mode)
         

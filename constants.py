@@ -13,20 +13,20 @@ V_DISPLACED = A_PISTON * STROKE  # m³ per cylinder
 NUM_CYL = 4
 
 # =================================== VALVE DATA ========================================
-# VALVE_TIMING = {
-#     'intake': {
-#         'open_btdc':  5,    # IVO = 5° Before TDC
-#         'close_abdc': 55,   # IVC = 55° After BDC
-#         'max_lift':   9.5,  # mm
-#         'diameter':   32.0  # mm
-#     },
-#     'exhaust': {
-#         'open_bbdc':  55,   # EVO = 55° Before BDC
-#         'close_atdc': 10,   # EVC = 10° After TDC
-#         'max_lift':   9.0,
-#         'diameter':   28.0
-#     }
-# }
+VALVE_TIMING = {
+    'intake': {
+        'open_btdc':  5,    # IVO = 5° Before TDC
+        'close_abdc': 55,   # IVC = 55° After BDC
+        'max_lift':   9.5,  # mm
+        'diameter':   32.0  # mm
+    },
+    'exhaust': {
+        'open_bbdc':  55,   # EVO = 55° Before BDC
+        'close_atdc': 10,   # EVC = 10° After TDC
+        'max_lift':   9.0,
+        'diameter':   28.0
+    }
+}
 
 # =================================== FUEL INJECTOR and SPARK DATA ========================
 INJECTOR_FLOW_CC_PER_MIN = 500.0  # Injector flow rate in cc/min

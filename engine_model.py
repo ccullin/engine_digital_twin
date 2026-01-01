@@ -379,27 +379,78 @@ class EngineModel:
     # --- Helper Methods to maintain functionality ---
 
     def _handle_stroke_transitions(self, i, stroke):
-        """Preserves the debug/reset logic at dead centers."""
-        if stroke == "exhaust":
-            self.P_cyl = self.P_manifold
+        """
+        Resets cylinder pressure based on valve opening events 
+        to maintain physical consistency.
+        """
+        if i == 0: # start of intake stroke
+            self.P_cyl = self.P_manifold # pressure equalises with intake manifold
+            # Reset air mass tracking for the new cycle
+            self._cylinder_total_air_mass_kg = 0.0
+            
+        if i == 540: # start of exhaust stroke
+            self.P_cyl = c.P_ATM_PA # Pressure equalizes with the exhaust manifold (Atmosphere)
             self._cycle_fuel_injected_cc = 0.0
-        # (Note: T_ind_720/power_kw calculations from original are preserved here if needed for logging)
 
+    # reverting back to the physics based determination of mass flow.
     def _update_mass_flow(self, ecu_outputs, stroke):
-        """Preserves injector and air intake logic."""
+        """Calculates physical mass flow using valve geometry and pressure delta."""
         current_rpm_safe = max(self.rpm, 10.0)
-        fuel_per_deg = c.INJECTOR_FLOW_CC_PER_MIN / (360 * current_rpm_safe)
         
+        # 1. FIXED FUEL LOGIC (Restored from your 'Old Working Version')
+        fuel_per_deg = c.INJECTOR_FLOW_CC_PER_MIN / (current_rpm_safe * 360) 
         if ecu_outputs["injector_on"]:
             self._cycle_fuel_injected_cc += fuel_per_deg
 
-        trapped_air_per_deg = ecu_outputs["trapped_air_mass_kg"] / 180
-        if stroke == "intake":
-            self._cylinder_total_air_mass_kg += trapped_air_per_deg
-        elif stroke == "exhaust":
-            if abs(self.current_theta - 540) % 540 <= 0.01:
-                self._exhaust_kg_per_degree = self._cylinder_total_air_mass_kg / 180
+        # 2. VALVE TIMING CONVERSION
+        vt = c.VALVE_TIMING
+        v_data_720 = {
+            'intake': {
+                'IVO': 720.0 - vt['intake']['open_btdc'],
+                'IVC': 180.0 + vt['intake']['close_abdc'],
+                'L_max': vt['intake']['max_lift'],
+                'D_valve': vt['intake']['diameter'],
+                'Cd': 0.68 * pf.calc_discharge_coeff(self.rpm) # Dynamic VE drop prevents infinite RPM
+            },
+            'exhaust': {
+                'EVO': 540.0 - vt['exhaust']['open_bbdc'],
+                'EVC': 0.0 + vt['exhaust']['close_atdc'],
+                'L_max': vt['exhaust']['max_lift'],
+                'D_valve': vt['exhaust']['diameter'],
+                'Cd': 0.70
+            }
+        }
+
+        # 3. PHYSICS-BASED AIR CALCULATION (Intake)
+        theta_arr = np.array([self.current_theta])
+        A_intake_mm2 = pf.calc_valve_area_vectorized(theta_arr, v_data_720, "intake")[0]
+        A_intake_m2 = A_intake_mm2 * 1e-6
+
+        dm_air_g = pf.intake_mass_flow(
+            A_valve=A_intake_m2, 
+            P_man=self.P_manifold, 
+            T_man=c.T_AMBIENT, 
+            rpm=self.rpm
+        )
+        dm_air_kg = dm_air_g / 1000.0
+
+        # Update physical state for Intake
+        self._cylinder_total_air_mass_kg += dm_air_kg
+        self.M_gas += dm_air_kg
+        self._current_step_dm = dm_air_kg # Critical for integrate_first_law
+
+        # 4. EXHAUST LOGIC (Removing mass from the cylinder)
+        if stroke == "exhaust":
+            # Determine how much to remove per degree to reach 0 by TDC
+            if abs(self.current_theta - 540) <= 0.5:
+                # Calculate the 'slug' of mass to remove over the 180 deg stroke
+                self._exhaust_kg_per_degree = self.M_gas / 180.0
+            
+            # Subtract mass from both the tracker and the physical gas state
             self._cylinder_total_air_mass_kg -= self._exhaust_kg_per_degree
+            self.M_gas -= self._exhaust_kg_per_degree
+            # Pass the negative mass flow to the integrator to allow pressure to drop
+            self._current_step_dm = -self._exhaust_kg_per_degree
 
     def _calculate_combustion_heat(self, spark_command):
         """Calculates heat release using the Wiebe S-curve with energy conservation."""
@@ -409,6 +460,7 @@ class EngineModel:
             self.spark_event_theta = self.current_theta
             self.combustion_active = True
             self.cumulative_heat_released = 0.0 # Track total energy released
+            self.spark_advance_btdc = (360.0 - (self.current_theta % 360.0)) % 360
             
             # Setup fuel/AFR/Efficiency
             fuel_kg = self._cycle_fuel_injected_cc * c.FUEL_DENSITY_KG_CC
@@ -469,7 +521,9 @@ class EngineModel:
     def _update_mechanical_dynamics(self, i, stroke, P_next, dV):
         """Preserves torque integration and RPM physics."""
         P_avg = (self.P_cyl + P_next) / 2.0
-        delta_work_J = P_avg * dV
+        # delta_work_J = P_avg * dV
+        # P_ambient is the pressure pushing on the "back" of the piston
+        delta_work_J = (P_avg - c.P_ATM_PA) * dV
         
         t_ind_cyl1 = pf.calc_indicated_torque_step(delta_work_J, stroke)
         
@@ -493,240 +547,11 @@ class EngineModel:
         omega = pf.eng_speed_rad(self.rpm)
         dt = np.deg2rad(1.0) / omega
         alpha = self.T_net_engine[i] / c.MOMENT_OF_INERTIA
-        self.rpm = max(c.CRANK_RPM, self.rpm + alpha * dt * 30.0 / np.pi)
+        self.rpm = max(c.CRANK_RPM, self.rpm + alpha * dt * 30.0 / np.pi)      
         
         self.rpm_history[i] = self.rpm
         self.power_history[i] = self.torque_brake * self.rpm / 9549.3
         
-        
-        
-        
-        
-        # # =================================================================
-        # # 1. Extract ECU commands (fresh every degree)
-        # # =================================================================
-        # ecu_spark_command = ecu_outputs["spark"]
-        # ecu_injector_on = ecu_outputs["injector_on"]
-        # trapped_air_kg = ecu_outputs["trapped_air_mass_kg"]
-
-        # trapped_air_kg_per_deg = trapped_air_kg / 180
-        # current_rpm_safe = max(self.rpm, 10.0)
-        # fuel_cc_per_degree = c.INJECTOR_FLOW_CC_PER_MIN / (360 * current_rpm_safe)
-
-        # # =================================================================
-        # # 2. Current crank angle (0–720°)
-        # # =================================================================
-        # theta = self.current_theta
-        # i = int(np.round(theta)) % 720
-        # i_next = (i + 1) % 720
-        # stroke, previous_stroke = self._get_stroke()
-
-        # # =================================================================
-        # # 2. Current crank angle (0–720°)
-        # # =================================================================
-        # if self._is_dead_center(i):
-        #     #  DEBUG print for INJECTION and SPARK
-
-        #     stroke_start = (i - 180) % 720
-        #     if stroke_start < i:
-        #         T_ind_stroke = self.torque_indicated_engine[stroke_start:i]
-        #         T_net_stroke = self.T_net_engine[stroke_start:i]
-        #     else:
-        #         T_ind_stroke = self.torque_indicated_engine[i:stroke_start]
-        #         T_net_stroke = self.T_net_engine[i:stroke_start]
-        #     T_ind_stroke_mean = sum(T_ind_stroke) / 180
-        #     T_net_stroke_mean = sum(T_net_stroke) / 180
-
-        #     if stroke == "exhaust":
-        #         self.P_cyl = self.P_manifold
-        #         self._cycle_fuel_injected_cc = (
-        #             0.0  # vent any fuel that did not get ignited due to DFCO
-        #         )
-
-        #     if stroke == "intake":  # start of a new cycle, previous cycle just finished
-        #         # Full 720° averages (this is what dynos, papers, and ECUs use)
-        #         T_ind_720 = np.mean(self.torque_indicated_engine)  # Nm
-        #         # T_fric_720 = np.mean([pf.calc_friction_torque_mean(r) for r in np.linspace(800, self.rpm, 10)])  # or just your mean function
-        #         # T_brake_720 = T_ind_720 - T_fric_720
-        #         # T_net_720   = T_brake_720 - self.wheel_load
-        #         T_net_720 = np.mean(self.T_net_engine)
-        #         power_kw = T_net_720 * self.rpm * np.pi / (30.0 * 1000.0)  # kW
-
-
-        # # =================================================================
-        # # 3. Volume & dV this step
-        # # =================================================================
-        # # Find nearest index in pre-computed theta_list
-        # V_current = self.V_list[i]
-        # V_next = self.V_list[i_next]
-        # dV = V_next - V_current
-
-        # # =================================================================
-        # # 4. FUEL INJECTION — real, per-degree delivery
-        # # =================================================================
-        # if ecu_injector_on:
-        #     # Injector is commanded ON for the full 1° duration
-        #     self._cycle_fuel_injected_cc = (
-        #         self._cycle_fuel_injected_cc + fuel_cc_per_degree
-        #     )
-
-        # # =================================================================
-        # # 4. AIR INTAKE per-degree linear intake and exhaust
-        # # =================================================================
-        # if stroke == "intake":
-        #     self._cylinder_total_air_mass_kg = (
-        #         self._cylinder_total_air_mass_kg + trapped_air_kg_per_deg
-        #     )
-        #     self._exhaust_g_per_degree = 0
-        # elif stroke == "exhaust":
-        #     if abs(theta - 540) % 540 <= 0.01:
-        #         self._exhaust_kg_per_degree = self._cylinder_total_air_mass_kg / 180
-        #     self._cylinder_total_air_mass_kg = (
-        #         self._cylinder_total_air_mass_kg - self._exhaust_kg_per_degree
-        #     )
-
-        # # =================================================================
-        # # 5. COMBUSTION — triggered by ECU spark command
-        # # =================================================================
-        # Q_in_per_degree = 0.0
-        # total_heat_J = 0.0
-
-        # # Check if spark is commanded (START OF BURN)
-        # if ecu_spark_command:
-        #     # === RECORD SPARK ADVANCE FOR KNOCK DETECTION ===
-        #     spark_theta = self.current_theta
-        #     self.spark_advance_btdc = 360.0 - (spark_theta % 360.0)
-            
-        #     # === calculate afr ===
-        #     fuel_available_kg = self._cycle_fuel_injected_cc * c.FUEL_DENSITY_KG_CC
-        #     actual_afr = (
-        #         (self._cylinder_total_air_mass_kg / fuel_available_kg)
-        #         if fuel_available_kg > 0
-        #         else 99.0
-        #     )
-        #     self.afr_sensor = actual_afr
-        #     combustion_efficiency = 0.94 if 11.5 <= actual_afr <= 16.0 else 0.80
-
-        #     # Calculate and set the heat rate state
-        #     total_heat_J = (
-        #         fuel_available_kg * c.LHV_FUEL_GASOLINE * combustion_efficiency
-        #     )
-        #     self.total_cycle_heat_J = total_heat_J
-        #     self._burn_heat_per_deg = total_heat_J / c.BURN_DURATION_DEG
-        #     self._burn_duration_remaining = c.BURN_DURATION_DEG
-
-        #     self._cycle_fuel_injected_cc = 0.0
-
-        # # Apply heat if burn is in progress
-        # if self._burn_duration_remaining > 0.0:
-        #     Q_in_per_degree = self._burn_heat_per_deg
-        #     self._burn_duration_remaining -= 1.0  # Decrement burn counter by 1 degree
-
-        #     # Log total heat for sanity check (only logs once per cycle)
-        #     # total_heat_J = self._burn_heat_per_deg * c.BURN_DURATION_DEG
-        # else:
-        #     # total_heat_J = 0.0
-        #     # self.total_cycle_heat_J = 0.0
-        #     self._burn_heat_per_deg = 0.0
-
-        # # =================================================================
-        # # 6. First law — 1° integration
-        # # =================================================================
-        # P_next, T_next = pf.integrate_first_law(
-        #     P_curr=self.P_cyl,
-        #     T_curr=self.T_cyl,
-        #     M_curr=self.M_gas,
-        #     V_curr=V_current,
-        #     Delta_M=0.0,
-        #     Delta_Q_in=Q_in_per_degree,
-        #     Delta_Q_loss=0.0,
-        #     dV_d_theta=dV,
-        #     gamma=c.GAMMA_AIR,
-        #     theta_delta=c.THETA_DELTA,
-        # )
-
-        # # =================================================================
-        # # 5. Update engine performance per degree
-        # # =================================================================
-        # # delta_work_J = self.P_cyl * dV
-        # P_avg = (self.P_cyl + P_next) / 2.0
-        # delta_work_J = P_avg * dV
-
-        # # 1. CONSTANTS FOR INSTANTANEOUS CALCULATION
-        # # Convert 1.0 degree to radians (assuming c.THETA_DELTA is 1.0)
-        # THETA_DELTA_RAD = c.THETA_DELTA * (np.pi / 180.0)
-
-        # # 2. INSTANTANEOUS INDICATED TORQUE (Replaces the cycle-averaged calculation)
-        # torque_indicated_cyl1_raw = delta_work_J / THETA_DELTA_RAD
-
-        # if stroke == "intake":
-        #     # Pumping stroke: Must consume work (Negative Torque)
-        #     # T_ind_raw is currently POSITIVE during intake, so we must negate it.
-        #     torque_indicated_cyl1 = -abs(torque_indicated_cyl1_raw)
-
-        # else:
-        #     # Power (positive) and Compression (negative) signs are correct.
-        #     torque_indicated_cyl1 = torque_indicated_cyl1_raw
-
-        # # # firing order is not important but using 1432 because I love early air-cooled
-        # self.torque_indicated_cyl_1[i] = torque_indicated_cyl1
-        # self.torque_indicated_cyl_4[(i + 180) % 720] = torque_indicated_cyl1
-        # self.torque_indicated_cyl_3[(i + 360) % 720] = torque_indicated_cyl1
-        # self.torque_indicated_cyl_2[(i + 540) % 720] = torque_indicated_cyl1
-
-        # torque_indicated = (
-        #     self.torque_indicated_cyl_1[i]
-        #     + self.torque_indicated_cyl_2[i]
-        #     + self.torque_indicated_cyl_3[i]
-        #     + self.torque_indicated_cyl_4[i]
-        # )
-        # self.torque_indicated_engine[i] = torque_indicated
-        
-        # # 3. FRICTION, BRAKE, AND NET TORQUE
-        # torque_friction = pf.calc_friction_torque_per_degree(self.rpm)
-        # torque_brake = torque_indicated - torque_friction
-        # self.torque_brake_720[i] = torque_brake        
-        
-        # T_net_engine = torque_brake - self.wheel_load
-        # self.torque_friction = torque_friction
-        # self.torque_brake = torque_brake
-        # self.T_net_engine[i] = T_net_engine
-
-        # # 4. DYNAMIC RPM UPDATE (Requires time step correction)
-        # omega = pf.eng_speed_rad(self.rpm)
-        # dt = np.deg2rad(1.0) / omega
-
-        # alpha = T_net_engine / c.MOMENT_OF_INERTIA  # rad/s²
-        # self.rpm = self.rpm + alpha * dt * 30.0 / np.pi  # convert back to RPM
-
-        # if self.rpm < c.CRANK_RPM:
-        #     self.rpm = c.CRANK_RPM
-        
-        # self.rpm_history[i] = self.rpm
-        # self.power_history[i] = torque_brake * self.rpm / 9549.3
-            
-
-        # # Stability — keeps model alive forever
-        # P_next = np.clip(P_next, 5_000, 18_000_000)
-        # # P_next = 0.70 * P_next + 0.30 * self.P_cyl
-        # T_next = np.clip(T_next, 220, 3500)
-        # # T_next = 0.80 * T_next + 0.20 * self.T_cyl
-
-
-        # # Update state
-        # self.P_cyl = P_next
-        # self.T_cyl = T_next
-
-        # # Log
-        # self.log["P"].append(P_next)
-        # self.log["V"].append(V_current)
-        # self.log["T"].append(T_next)
-
-
-        # if self.current_theta >= 719.0:  # this is the last cycle has completed and the next cycle is 0
-        #     self._end_of_cycle_update()
-
-        # return None
 
     # ----------------------------------------------------------------------
     def _end_of_cycle_update(self):
@@ -735,6 +560,8 @@ class EngineModel:
         # end of cycle checks
         peak_bar = max(self.log["P"]) / 100000.0 # Ensure P is in bar
         self.peak_pressure_bar = peak_bar
+        # Find the index (crank angle) where that max pressure occurred
+        self.peak_p_angle = np.argmax(self.log["P"])
 
         self.knock_detected, self.knock_intensity = pf.detect_knock(
             peak_bar = peak_bar,

@@ -190,92 +190,92 @@ def calc_piston_speed_factor(theta):
 
 # --- Valve Lift and Area Functions ---
 
-# def calc_valve_lift(theta, L_peak, duration, phase_lag, zero_ref=-360.0):
-#     """
-#     Calculates instantaneous valve lift using a simple cosine-based approximation
-#     of a cam profile. (No changes made here, calculation looks correct for approximation).
-#     """
+def calc_valve_lift(theta, L_peak, duration, phase_lag, zero_ref=-360.0):
+    """
+    Calculates instantaneous valve lift using a simple cosine-based approximation
+    of a cam profile. (No changes made here, calculation looks correct for approximation).
+    """
 
-#     # Center the angle around the peak lift (phase_lag)
-#     # The duration starts/ends at L=0.
-#     theta_adjusted = (theta - phase_lag)
+    # Center the angle around the peak lift (phase_lag)
+    # The duration starts/ends at L=0.
+    theta_adjusted = (theta - phase_lag)
 
-#     # Find the valve open range: start_angle to end_angle
-#     start_angle = phase_lag - duration / 2.0
-#     end_angle = phase_lag + duration / 2.0
+    # Find the valve open range: start_angle to end_angle
+    start_angle = phase_lag - duration / 2.0
+    end_angle = phase_lag + duration / 2.0
 
-#     # We must handle the 720-degree cycle wrap-around.
-#     # The logic below attempts to handle the boundary condition of the cosine curve.
+    # We must handle the 720-degree cycle wrap-around.
+    # The logic below attempts to handle the boundary condition of the cosine curve.
 
-#     is_open = False
+    is_open = False
 
-#     # Normalize theta to be in the range [0, 720)
-#     theta_norm = theta % 720.0
-#     start_norm = start_angle % 720.0
-#     end_norm = end_angle % 720.0
+    # Normalize theta to be in the range [0, 720)
+    theta_norm = theta % 720.0
+    start_norm = start_angle % 720.0
+    end_norm = end_angle % 720.0
 
-#     if start_norm > end_norm:
-#         # Overlap case (e.g., start at 500, end at 100)
-#         if theta_norm >= start_norm or theta_norm <= end_norm:
-#             is_open = True
-#     else:
-#         # Standard case (e.g., start at 100, end at 500)
-#         if theta_norm >= start_norm and theta_norm <= end_norm:
-#             is_open = True
+    if start_norm > end_norm:
+        # Overlap case (e.g., start at 500, end at 100)
+        if theta_norm >= start_norm or theta_norm <= end_norm:
+            is_open = True
+    else:
+        # Standard case (e.g., start at 100, end at 500)
+        if theta_norm >= start_norm and theta_norm <= end_norm:
+            is_open = True
 
-#     if not is_open:
-#         return 0.0
+    if not is_open:
+        return 0.0
 
-#     # Calculate the cosine lift profile (L = L_peak * (1 - cos(theta_adjusted * 360/duration)) / 2)
-#     # The factor 360/duration ensures the argument of cos goes from -pi to pi over the duration.
-#     lift_ratio = (1 - np.cos(np.deg2rad(theta_adjusted) * 360.0 / duration)) / 2.0
+    # Calculate the cosine lift profile (L = L_peak * (1 - cos(theta_adjusted * 360/duration)) / 2)
+    # The factor 360/duration ensures the argument of cos goes from -pi to pi over the duration.
+    lift_ratio = (1 - np.cos(np.deg2rad(theta_adjusted) * 360.0 / duration)) / 2.0
 
-#     return max(0.0, L_peak * lift_ratio)
-
-
-# def calc_valve_area(theta_list):
-#     """
-#     Calculates the instantaneous curtain flow area for intake and exhaust valves
-#     over the entire crank angle range (theta_list).
-#     """
-
-#     # --- Intake Valve Constants (Index 0) ---
-#     D_i = c.VALVE_DATA['D_valve'][0]
-#     L_i_peak = c.VALVE_DATA['L_peak'][0]
-#     Dur_i = c.VALVE_DATA['duration'][0]
-#     PL_i = c.VALVE_DATA['phase_lag'][0]
-#     Cd_i = c.VALVE_DATA['flow_coeff'][0]
-
-#     ZERO_REF = c.THETA_MIN
-
-#     # --- Exhaust Valve Constants (Index 1) ---
-#     D_e = c.VALVE_DATA['D_valve'][1]
-#     L_e_peak = c.VALVE_DATA['L_peak'][1]
-#     Dur_e = c.VALVE_DATA['duration'][1]
-#     PL_e = c.VALVE_DATA['phase_lag'][1]
-#     Cd_e = c.VALVE_DATA['flow_coeff'][1]
-
-#     A_in_list = []
-#     A_ex_list = []
-
-#     for theta in theta_list:
-
-#         # Intake Valve (IV) lift calculation
-#         L_i_act = calc_valve_lift(theta, L_i_peak, Dur_i, PL_i, ZERO_REF)
-#         # Area = pi * D_valve * L_actual * flow_coeff (Curtain area approximation)
-#         A_in = np.pi * D_i * L_i_act * Cd_i
-#         A_in_list.append(float(A_in))
-
-#         # Exhaust Valve (EV) lift calculation
-#         L_e_act = calc_valve_lift(theta, L_e_peak, Dur_e, PL_e, ZERO_REF)
-#         A_ex = np.pi * D_e * L_e_act * Cd_e
-#         A_ex_list.append(float(A_ex))
+    return max(0.0, L_peak * lift_ratio)
 
 
-#     return {
-#         'A in': A_in_list,
-#         'A ex': A_ex_list
-#     }
+def calc_valve_area(theta_list):
+    """
+    Calculates the instantaneous curtain flow area for intake and exhaust valves
+    over the entire crank angle range (theta_list).
+    """
+
+    # --- Intake Valve Constants (Index 0) ---
+    D_i = c.VALVE_DATA['D_valve'][0]
+    L_i_peak = c.VALVE_DATA['L_peak'][0]
+    Dur_i = c.VALVE_DATA['duration'][0]
+    PL_i = c.VALVE_DATA['phase_lag'][0]
+    Cd_i = c.VALVE_DATA['flow_coeff'][0]
+
+    ZERO_REF = c.THETA_MIN
+
+    # --- Exhaust Valve Constants (Index 1) ---
+    D_e = c.VALVE_DATA['D_valve'][1]
+    L_e_peak = c.VALVE_DATA['L_peak'][1]
+    Dur_e = c.VALVE_DATA['duration'][1]
+    PL_e = c.VALVE_DATA['phase_lag'][1]
+    Cd_e = c.VALVE_DATA['flow_coeff'][1]
+
+    A_in_list = []
+    A_ex_list = []
+
+    for theta in theta_list:
+
+        # Intake Valve (IV) lift calculation
+        L_i_act = calc_valve_lift(theta, L_i_peak, Dur_i, PL_i, ZERO_REF)
+        # Area = pi * D_valve * L_actual * flow_coeff (Curtain area approximation)
+        A_in = np.pi * D_i * L_i_act * Cd_i
+        A_in_list.append(float(A_in))
+
+        # Exhaust Valve (EV) lift calculation
+        L_e_act = calc_valve_lift(theta, L_e_peak, Dur_e, PL_e, ZERO_REF)
+        A_ex = np.pi * D_e * L_e_act * Cd_e
+        A_ex_list.append(float(A_ex))
+
+
+    return {
+        'A in': A_in_list,
+        'A ex': A_ex_list
+    }
 
 
 def theta_to_720(theta):
@@ -548,11 +548,12 @@ def integrate_first_law(
     # ─────────────────── PHYSICALLY JUSTIFIED STABILITY (this is NOT cheating) ───────────────────
     # In a real engine, pressure cannot rise more than ~15–20 bar per crank degree at 9000 rpm
     # This is due to finite burn rate, blow-by, crevice flow, heat loss, etc.
-    max_allowed_dP = (
-        1.8e6 * theta_delta
-    )  # ~18 bar per degree → totally safe even at 12k rpm
-    if P_next > P_curr + max_allowed_dP:
-        P_next = P_curr + max_allowed_dP  # This is the ONE line that saves everything
+    ## REMOVED as this could mask performance/failure when in RL mode
+    # max_allowed_dP = (
+    #     1.8e6 * theta_delta
+    # )  # ~18 bar per degree → totally safe even at 12k rpm
+    # if P_next > P_curr + max_allowed_dP:
+    #     P_next = P_curr + max_allowed_dP  # This is the ONE line that saves everything
 
     # Never allow deep vacuum (numerical death)
     P_next = max(
@@ -676,7 +677,7 @@ def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
     """
     # 1. Base threshold scaled for realistic Wiebe Pmax
     # A safe Pmax for a 10:1 CR N/A engine is around 100 bar.
-    base_threshold = 105.0 
+    base_threshold = 95.0 
     
     # 2. Octane Correction (Every point of Octane is worth ~2 bar of tolerance)
     # Baseline is 95 RON. 
@@ -684,17 +685,17 @@ def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
     
     # 3. RPM Sensitivity (High RPM reduces time for knock to occur)
     # Every 1000 RPM adds ~3 bar of pressure tolerance
-    rpm_safety = (rpm / 1000.0) * 3.0
+    rpm_safety = (rpm / 1000.0) * 2.0
 
     # 4. Thermal & Chemistry Factors (Preserving your logic with better scaling)
     # CLT protection
-    cold_protection = max(0.0, (90.0 - clt) * 1.5) if clt < 90 else 0.0
+    cold_protection = np.clip((90.0 - clt) * 0.5, 0, 15.0)
     
     # Rich mixture cooling (Lambda < 1.0)
-    rich_safety = max(0.0, (1.0 - lambda_) * 40.0) 
+    rich_safety = np.clip((1.0 - lambda_) * 30.0, 0, 10.0)
     
     # Spark Penalty (If you push way past typical MBT limits)
-    advance_penalty = max(0.0, (spark_advance - 32.0) * 1.5)
+    advance_penalty = max(0.0, (spark_advance - 30.0) * 2.0)
 
     # 5. Calculate Final Threshold
     knock_threshold_bar = (
@@ -717,6 +718,16 @@ def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
         knock_detected = False
         knock_intensity = 0.0
         
+    # print(
+    #     "KNOCK DEBUG:  "
+    #     f"peak_bar: {peak_bar:6.1f} | "
+    #     f"clt: {clt:4.1f} | "
+    #     f"rpm: {rpm:4.0f} | "
+    #     f"spark_advance: {spark_advance:4.1f} | "
+    #     f"lambda_: {lambda_:4.2f} | "
+    #     f"knock_int: {knock_intensity:4.1f}"
+    # )
+        
     return knock_detected, knock_intensity
 
 def calc_indicated_torque_step(delta_work_J, stroke):
@@ -728,8 +739,9 @@ def calc_indicated_torque_step(delta_work_J, stroke):
     theta_delta_rad = c.THETA_DELTA * (np.pi / 180.0)
     torque_raw = delta_work_J / theta_delta_rad
 
-    if stroke == "intake":
-        return -abs(torque_raw)
+    # removing this in favour of physics from _update_mechanical_dynamics
+    # if stroke == "intake":
+    #     return -abs(torque_raw)
     return torque_raw
 
 def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):

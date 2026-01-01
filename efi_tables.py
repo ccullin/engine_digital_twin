@@ -98,6 +98,15 @@ class EFITables:
         ])
 
     def _prooven_spark_table(self):
+        # return np.array([
+        #     [ 8,  8,  8,  8,  8,  8],  #  100 rpm (CRANKING Safe Retarded Spark)
+        #     [ 8, 30, 25, 20, 18, 15],  # 600 rpm (Extrapolated the 150 kPa column as retarded for load)
+        #     [38, 33, 28, 26.31, 26.31, 18],  # 2000 rpm
+        #     [42, 37, 32, 27.27, 27.27, 27.27],  # 4000 rpm
+        #     [38, 33, 28, 24, 24, 24],  # 6000 rpm
+        #     [35, 30, 25, 23, 21, 18],  # 8000 rpm
+        # ])
+        
         return np.array([
             [ 8,  8,  8,  8,  8,  8],  #  100 rpm (CRANKING Safe Retarded Spark)
             [ 8, 30, 25, 20, 18, 15],  # 600 rpm (Extrapolated the 150 kPa column as retarded for load)
@@ -106,6 +115,7 @@ class EFITables:
             [38, 33, 28, 25, 23, 20],  # 6000 rpm
             [35, 30, 25, 23, 21, 18],  # 8000 rpm
         ])
+  
     
     def _prooven_afr_table(self):
         return np.array([

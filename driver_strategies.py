@@ -251,18 +251,35 @@ class DynoStrategy(BaseStrategy):
         
         
     def driver_update(self, driver):
+        tps = 100.0 # always WOT in dyno mode.
+        
         # inject RL target RPM
         if self.rl_dyno_mode:
             self.dyno_target_rpm = self.external_target_rpm
         
-        # Start DYNO once target rpm reached
-        control_rpm = np.mean(driver.cycle_rpm)
-        if control_rpm >= (DynoStrategy.DYNO_START_RPM - 100) and control_rpm <= DynoStrategy.DYNO_FINISH_RPM:
-            self.in_dyno_sweep = True
-            tps = 100.0
+        # Start DYNO once target rpm reached (uses instantaneous rpm with hysteresis)  
+        low_threshold = c.IDLE_RPM  # e.g., 1800
+        high_threshold = DynoStrategy.DYNO_START_RPM - 100 # e.g., 1900    
+        if not self.in_dyno_sweep:
+            # We only wake up if we cross the high bar
+            if driver.rpm >= high_threshold:
+                self.in_dyno_sweep = True
         else:
-            self.in_dyno_sweep = False
-            tps = 100.0  # keep WOT until end
+            # Once we are on, we stay on unless we fall below the low bar
+            if driver.rpm < low_threshold:
+                self.in_dyno_sweep = False
+                print(f"DEBUG: fell out of dyno sweep at rpm: {driver.rpm:4.0f}")
+        
+        
+        
+        # control_rpm = np.mean(driver.cycle_rpm)
+        # if control_rpm >= (DynoStrategy.DYNO_START_RPM - 100):
+        # # if control_rpm >= (DynoStrategy.DYNO_START_RPM - 100) and control_rpm <= DynoStrategy.DYNO_FINISH_RPM:
+        #     self.in_dyno_sweep = True
+        #     tps = 100.0
+        # else:
+        #     self.in_dyno_sweep = False
+        #     tps = 100.0  # keep WOT until end
    
         # Dyno load
         self._set_dyno_target(driver)
@@ -292,14 +309,20 @@ class DynoStrategy(BaseStrategy):
     def _set_dyno_target(self, driver):
         
         if not self.in_dyno_sweep:
+            # print(f"== NOT IN DYNO MODE == "
+            #       f"target: {self.dyno_target_rpm:4.0f} | "
+            #       f"mean_rpm: {np.mean(driver.cycle_rpm):4.0f} | "
+            #       f"instant_rpm {driver.rpm:4.0f} | "
+            #       )
             return
         
         if self._rpm_stablised(driver): 
             if self.rl_dyno_mode:
                 self.point_settled = True   # TRIGGER EVENT for RL training: Point is settled
-                self._handle_rl_progression(driver)
+                # self._handle_rl_progression(driver)
             else:
                 self._handle_automatic_progression(driver)
+        self._handle_rl_progression(driver) # RL can skip RPMs, manual mode cannot.
             
     def _rpm_stablised(self, driver):
         """
@@ -516,7 +539,7 @@ class DynoStrategy(BaseStrategy):
         # Create twin axis ONCE and store it
         self.ax2 = ax.twinx()
         self.ax2.set_ylabel("Power (kW)", color='m')
-        self.ax2.set_ylim(0, 90)
+        self.ax2.set_ylim(0, 105)
         self.ax2.tick_params(axis='y', labelcolor='m')
         self.line_power, = self.ax2.plot([], [], 'm^--', linewidth=2, markersize=8, label='Power (kW)')
 

@@ -15,7 +15,7 @@ src/
 
 # Reinforced Learning files
 #files
-rl_.py
+rl_*.py
 *.zip
 #folders
 rl/
