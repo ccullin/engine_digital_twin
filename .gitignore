@@ -4,6 +4,7 @@ debug_*.txt
 *copy.py
 .DS_Store
 events.*
+*.txt
 
 # ignore folders
 __pycache__/
