@@ -36,24 +36,25 @@ class SimulationManager:
         while self.degree_count < 720 and not self.stop_simulation:
             
             # 1. get driver inputs (TPS (accelerator) wheel load (hill or dyno) and ambient air pressure (altitude))
-            driver_dict = self.driver.get_environment(self.engine.rpm, cycle_count, self.degree_count)
+            driver_dict = self.driver.get_environment(self.engine.sensors.rpm, cycle_count, self.degree_count)
 
             # 2. update engine with driver inputs
-            self.engine.tps_sensor = driver_dict["throttle_pos"]
-            self.engine.P_ambient_sensor = driver_dict["ambient_pressure"]
-            self.engine.wheel_load = driver_dict["wheel_load"]
+            self.engine.sensors.TPS_percent = driver_dict["throttle_pos"]
+            self.engine.sensors.P_ambient = driver_dict["ambient_pressure"]
+            self.engine.state.wheel_load = driver_dict["wheel_load"]
+            
             
             # 3. get the ecu reponse to current engine sensors
             ecu_outputs_dict = self.ecu.update(self.engine.get_sensors())
             
             # 4. get engine reponse to update ECU inputs
-            sensors_dict, engine_data_dict = self.engine.step(ecu_outputs_dict)
+            sensors, engine_data_dict = self.engine.step(ecu_outputs_dict)
             
             
 
             self.degree_count += 1
 
-        return sensors_dict, engine_data_dict, ecu_outputs_dict
+        return sensors, engine_data_dict, ecu_outputs_dict
 
 
 if __name__ == "__main__":
@@ -79,8 +80,8 @@ if __name__ == "__main__":
         while cycle_count < args.cycles and not exit_now:
             exit_now = dashboard_manager.stopped if dashboard_manager else False
             
-            sensors_dict, engine_data_dict, ecu_outputs_dict = system.run_one_cycle(cycle_count)
-            data = (sensors_dict, engine_data_dict, ecu_outputs_dict)
+            sensors, engine_data_dict, ecu_outputs_dict = system.run_one_cycle(cycle_count)
+            data = (sensors, engine_data_dict, ecu_outputs_dict)
             cycle_count += 1
 
             # Optional: old-style bulk update every 10 cycles (can keep or remove)

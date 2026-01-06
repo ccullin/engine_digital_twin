@@ -284,57 +284,65 @@ def theta_to_720(theta):
 
 
 def calc_valve_lift_vectorized(
-    theta_array: np.ndarray, valve_data720, valve: str
+    theta_array: np.ndarray, valves, valve: str
 ) -> np.ndarray:
     """
     Vectorized version of calc_valve_lift — returns array of lifts for entire theta_array
     """
 
-    v = valve_data720[valve]
     ca = theta_to_720(theta_array)
-
-    open_ca = v["IVO"] if valve == "intake" else v["EVO"]
-    close_ca = v["IVC"] if valve == "intake" else v["EVC"]
-
-    # Create boolean mask: valve is open
-    open_mask = (ca >= open_ca) | (ca <= close_ca - 720)  # handles wrap-around (rare)
-    closed_mask = ~open_mask
+    
+    if valve == 'intake':
+        open_ca = valves.IVO 
+        close_ca = valves.IVC 
+        max_lift = valves.intake_lift_mm
+    else:
+        open_ca = valves.EVO
+        close_ca = valves.EVC
+        max_lift = valves.exhaust_lift_mm
 
     # Mid lift and half duration
-    mid_ca = (open_ca + close_ca) / 2.0
-    half_dur = (close_ca - open_ca) / 2.0
+    duration = (close_ca - open_ca) % 720
+    half_dur = duration / 2.0
+    mid_ca = (open_ca + half_dur) % 720 # centre of the lift 
+    
+    dist = (ca - mid_ca + 360) % 720 - 360
+    
 
     # Angle from mid-lift: -180 to +180
-    phi_deg = (ca - mid_ca) / half_dur * 180.0
+    phi_deg = (dist / half_dur) * 180.0
 
     # Cosine profile
     lift = np.zeros_like(ca)
     active = np.abs(phi_deg) <= 180.0
-    lift[active] = v["L_max"] * (1.0 + np.cos(np.radians(phi_deg[active]))) / 2.0
+    lift[active] = max_lift * (1.0 + np.cos(np.radians(phi_deg[active]))) / 2.0
 
-    lift[closed_mask] = 0.0
     return lift
 
 
-def calc_valve_area_vectorized(
-    theta_array: np.ndarray, valve_data720, valve: str
+def calc_valve_curtain_vectorized(
+    theta_array: np.ndarray, valves, valve: str, rpm: float
 ) -> np.ndarray:
-    v = valve_data720[valve]
-    lift = calc_valve_lift_vectorized(theta_array, valve_data720, valve)
 
-    D = v["D_valve"]
-    Cd = v["Cd"]
+    lift_mm = calc_valve_lift_vectorized(theta_array, valves, valve)
 
-    # CORRECT curtain area
-    curtain_area = np.pi * D * lift
+    if valve == "intake":
+        diam_mm = valves.intake_diam_mm
+        Cd = 0.68 * calc_discharge_coeff(rpm)
+    else:
+        diam_mm = valves.exhaust_diam_mm
+        Cd = 0.7
+
+    curtain_area = np.pi * diam_mm * lift_mm
 
     # Apply real-world discharge coefficient variation
     # Cd increases slightly with lift/diameter ratio
-    L_over_D = lift / D
+    L_over_D = lift_mm / diam_mm
     Cd_effective = Cd * (1.0 + 0.25 * L_over_D)  # matches dyno data
     Cd_effective = np.clip(Cd_effective, 0.0, 0.85)
 
-    return Cd_effective * curtain_area
+    return Cd_effective * curtain_area #mm2
+ 
 
 
 # --- Flow and Mass Functions ---
@@ -355,16 +363,12 @@ def calc_discharge_coeff(rpm):
 
 # physics_functions.py
 
-# === INTAKE FLOW — FINAL CALIBRATED VERSION (copy-paste exactly) ===
-# Uses fixed 92 kPa back-pressure + correct Cd = 0.68
-# This is what GT-POWER, AVL Boost, Ricardo WAVE use for NA engines
-
-
 def intake_mass_flow(A_valve, P_man, T_man, rpm):
     """
     Industry-standard NA intake flow with momentum override.
     Absolutely no NaNs, no crashes, works from 250 rpm to 12 000 rpm.
     """
+    
     if A_valve < 1e-8:
         return 0.0
 
@@ -398,7 +402,7 @@ def intake_mass_flow(A_valve, P_man, T_man, rpm):
         mdot = Cd * A_valve * P_man * np.sqrt(inside)
 
     deg_per_sec = max(rpm, 50.0) * 6.0  # rpm → deg/s
-    return (mdot / deg_per_sec) * 1000  # g/deg
+    return (mdot / deg_per_sec)  # kg/deg
 
 
 def exhaust_mass_flow(A_valve, P_cyl, T_cyl, rpm):

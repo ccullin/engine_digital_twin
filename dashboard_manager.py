@@ -76,7 +76,7 @@ class DashboardManager:
         if not self.enabled:
             return
 
-        sensors_dict, engine_data_dict, ecu_outputs_dict = data
+        sensors, engine_data_dict, ecu_outputs_dict = data
 
 
         # Build formatted telemetry text
@@ -87,13 +87,13 @@ class DashboardManager:
             "",
             f"Cycle:          {cycle_count:8.0f}",
             "",
-            "─ Sensors ─",
-            f"RPM:            {sensors_dict['RPM']:8.0f}",
-            f"RPM avg:        {np.mean(sensors_dict['rpm_720_history']):8.0f}",
-            f"MAP:            {sensors_dict['MAP_kPa']:8.1f} kPa",
-            f"AFR:            {sensors_dict['actual_AFR']:8.3f}",
-            f"CLT:            {sensors_dict['CLT_C']:8.1f} °C",
-            f"Knock:          {sensors_dict['Knock']:8.3f}",
+            "─ sensors ─",
+            f"RPM:            {sensors.rpm:8.0f}",
+            f"RPM avg:        {np.mean(sensors.rpm_history):8.0f}",
+            f"MAP:            {sensors.MAP_kPa:8.1f} kPa",
+            f"AFR:            {sensors.AFR:8.3f}",
+            f"CLT:            {sensors.CLT_C:8.1f} °C",
+            f"Knock:          {sensors.knock:8.3f}",
             "",
             "─ ECU Outputs ─",
             f"Idle Valve:     {ecu_outputs_dict['idle_valve_position']:8.1f} %",

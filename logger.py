@@ -2,6 +2,7 @@
 
 import csv
 import time
+from dataclasses import fields
 from engine_model import FixedKeyDictionary
 import sys
 
@@ -13,8 +14,10 @@ class Logger:
         self.start_time = time.time()
         self.csv_file = open(LOGFILE, "w", newline="")
         self.writer = csv.writer(self.csv_file)
+        
+        sensor_keys = [f.name for f in fields(sensors)]
 
-        HEADER_KEYS = ["time_s", *sensors.keys(), *engine_data.keys(), *ecu_data.keys()]
+        HEADER_KEYS = ["time_s", *sensor_keys, *engine_data.keys(), *ecu_data.keys()]
 
         self.writer.writerow(HEADER_KEYS)
         # print(HEADER_KEYS)

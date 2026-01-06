@@ -74,12 +74,11 @@ class ECUController:
         self.crank_tooth = 0
         self.cam_sync = False
         self.crank_sync = False
-        self.calculated_theta = (
-            0.0  # will be crank * cam 0-719 in 10 degree increments.
-        )
+        self.calculated_theta = 0
         self.last_calculated_theta = 0
         self.first_crank_rotation = True
         self.cycle = 1
+        self.rpm_history = np.zeros(720)
 
         # --- for internal debugging ---
         self._required_fuel_g = 0
@@ -132,22 +131,23 @@ class ECUController:
         """
   
         # 1. extract sensor inputs
-        RPM = sensors["RPM"]
-        rpm_history = sensors["rpm_720_history"]
-        MAP_kPa = sensors["MAP_kPa"]
-        TPS = sensors["TPS_percent"]
-        CLT_C = sensors["CLT_C"]
-        crank_pos = sensors["crank_pos"]
-        cam_pulse = sensors["cam_sync"]
+        RPM = sensors.rpm
+        # rpm_history = sensors.rpm_720_history
+        MAP_kPa = sensors.MAP_kPa
+        TPS = sensors.TPS_percent
+        CLT_C = sensors.CLT_C
+        crank_pos = sensors.crank_pos
+        cam_pulse = sensors.cam_sync
 
         current_rpm_safe = max(RPM, 10.0)
+        self.rpm_history[self.calculated_theta] = RPM
         
         # 2. Subsystems
         self._sync_timing(crank_pos, cam_pulse)
         self._lookup_tables(RPM, MAP_kPa)         
         self._calculate_spark_timing()
         self._calculate_fuel_delivery(MAP_kPa, c.T_INTAKE_K, RPM)
-        self._calculate_idle_valve(TPS, RPM, rpm_history, CLT_C)
+        self._calculate_idle_valve(TPS, RPM, CLT_C)
 
         # 3. Build outputs
         return self.get_outputs()
@@ -177,7 +177,7 @@ class ECUController:
                 self.cycle += 1
                 
     # ---------------------------------------------------------------------
-    def _calculate_idle_valve(self, TPS, RPM, rpm_history, CLT_C):
+    def _calculate_idle_valve(self, TPS, RPM, CLT_C):
         """Idle valve control — uses PID or external command."""
 
         if self.rl_idle_mode:
@@ -185,7 +185,7 @@ class ECUController:
             idle_valve_position = self.external_idle_command  # set by RL env
         else:
             # Normal mode: use PID
-            idle_valve_position = self._idle_pid(TPS, RPM, rpm_history, CLT_C)
+            idle_valve_position = self._idle_pid(TPS, RPM, CLT_C)
         
         self.idle_valve_position = idle_valve_position
         
@@ -260,11 +260,11 @@ class ECUController:
 
 
     # -----------------------------------------------------------------------------------------
-    def _idle_pid(self, TPS_percent, RPM, rpm_history, CLT_C):
+    def _idle_pid(self, TPS_percent, RPM, CLT_C):
         current_theta = int(self.calculated_theta % 720)
         idle_pos = 0.0
-        rpm_avg = np.mean(rpm_history)
-        prev_rpm = rpm_history[(current_theta - 2) % 720]
+        rpm_avg = np.mean(self.rpm_history)
+        prev_rpm = self.rpm_history[(current_theta - 2) % 720]
         
         self.fuel_cut_active = False
 
