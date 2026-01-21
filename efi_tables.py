@@ -12,29 +12,33 @@ class EFITables:
 
     def __init__(self):
         # === Table Grid Definition ===
-        self.rpm_bins = np.array([100, 600, 2000, 4000, 6000, 8000])
-        self.map_bins = np.array([30, 50, 75, 95, 105, 150])  # kPa
+        # self.rpm_bins = np.array([100, 600, 2000, 4000, 6000, 8000])
+        # self.map_bins = np.array([30, 50, 75, 95, 105, 150])  # kPa
+        
+        self.rpm_bins = np.array([800, 1600, 2400, 3200, 4000, 4800, 5600])
+        self.map_bins = np.array([30, 50, 70, 90, 110])  # kPa
+        
 
         # === VE Table: Current, Safe Default, Min/Max Bounds ===
-        self.ve_table = self._prooven_ve_table()
+        self.ve_table = self._proven_ve_table()
         # self.ve_table = self._learned_ve_table()
         self.ve_min = self._ve_min_bounds()
         self.ve_max = self._ve_max_bounds()
 
         # === Spark Table (BTDC) ===
-        self.spark_table = self._prooven_spark_table()
+        self.spark_table = self._proven_spark_table()
         # self.spark_table = self._learned_spark_table()
         self.spark_min = self._spark_min_bounds()
         self.spark_max = self._spark_max_bounds()
 
         # === AFR Target Table ===
-        self.afr_table = self._prooven_afr_table()
+        self.afr_table = self._proven_afr_table()
         # self.afr_table = self._learned_afr_table()
         self.afr_min = self._afr_min_bounds()
         self.afr_max = self._afr_max_bounds()
         
         # === Injector Timing Table ===
-        self.injector_table = self._prooven_injector_table()
+        self.injector_table = self._proven_injector_end_table()
         # self.injector_table = self._learned_injector_table()
         self.injector_min = self._injector_min_bounds()
         self.injector_max = self._injector_max_bounds()
@@ -87,55 +91,119 @@ class EFITables:
     # =========================================================================
     # PROVEN Tables (known working state - used as benchmark)
     # =========================================================================
-    def _prooven_ve_table(self):
+
+    def _proven_ve_table(self):
+        # Rows (RPM): 800, 1600, 2400, 3200, 4000, 4800, 5600
+        # Cols (MAP): 30, 50, 70, 90, 110 kPa
         return np.array([
-            [40, 100, 100, 100, 100, 100],  # 100 rpm (Low Cranking VE)
-            [ 40,  50,  60,  70,  75,  75],  # 600 rpm
-            [ 40,  70,  85,  95, 100, 100],  # 2000 rpm
-            [ 40,  80,  95, 102, 105, 105],  # 4000 rpm
-            [ 40,  75,  90,  98, 102, 102],  # 6000 rpm
-            [ 40,  65,  80,  90,  95,  95],  # 8000 rpm
+            # 30      50      70      90      110    (MAP kPa)
+            [45.0,   65.0,  100.0,   80.0,   82.0],  # 800  rpm (Idle)
+            [48.0,   70.0,   80.0,   85.0,   87.0],  # 1600 rpm
+            [50.0,   72.0,   82.0,   88.0,   90.0],  # 2400 rpm
+            [52.0,   75.0,   85.0,   90.0,   92.0],  # 3200 rpm (Peak Torque)
+            [52.0,   75.0,   84.0,   88.0,   90.0],  # 4000 rpm
+            [50.0,   72.0,   80.0,   84.0,   85.0],  # 4800 rpm
+            [45.0,   68.0,   75.0,   78.0,   80.0],  # 5600 rpm (Power drop-off)
+        ])
+        
+    def _proven_afr_table(self):
+        # Rows: 800, 1600, 2400, 3200, 4000, 4800, 5600 RPM
+        # Cols: 30, 50, 70, 90, 110 kPa MAP
+        return np.array([
+            [14.0, 12.0, 12.0, 13.2, 12.8],  # 800 rpm
+            [14.7, 14.7, 14.0, 13.0, 12.5],  # 1600 rpm
+            [15.0, 14.7, 14.0, 13.0, 12.5],  # 2400 rpm
+            [15.5, 15.0, 14.0, 13.0, 12.5],  # 3200 rpm (Cruise/Power transition)
+            [15.5, 15.0, 14.0, 13.0, 12.5],  # 4000 rpm
+            [15.5, 14.7, 13.5, 12.8, 12.5],  # 4800 rpm
+            [15.5, 14.7, 13.5, 12.8, 12.5],  # 5600 rpm
+        ])
+        
+    def _proven_spark_table(self):
+        # Rows: 800, 1600, 2400, 3200, 4000, 4800, 5600 RPM
+        # Cols: 30, 50, 70, 90, 110 kPa MAP
+        return np.array([
+            [10, 12, 16, 8,  6],   # 800 rpm (Low advance for idle stability)
+            [22, 20, 18, 16, 14],  # 1600 rpm
+            [28, 26, 22, 18, 16],  # 2400 rpm
+            [32, 30, 26, 22, 20],  # 3200 rpm
+            [34, 32, 28, 24, 22],  # 4000 rpm
+            [36, 34, 30, 26, 24],  # 4800 rpm
+            [36, 34, 30, 28, 26],  # 5600 rpm
+        ])
+        
+
+
+    def _proven_injector_end_table(self):
+        # Rows (RPM): 800, 1600, 2400, 3200, 4000, 4800, 5600
+        # Cols (MAP): 30, 50, 70, 90, 110 kPa
+        return np.array([
+            # 30     50     70     90    110   (MAP kPa)
+            [188,   175,   160,   145,   125], # 800  RPM
+            [192,   180,   165,   150,   132], # 1600 RPM
+            [200,   188,   173,   158,   140], # 2400 RPM
+            [208,   195,   180,   165,   150], # 3200 RPM
+            [215,   202,   188,   175,   163], # 4000 RPM
+            [222,   210,   195,   185,   175], # 4800 RPM
+            [230,   218,   205,   195,   188], # 5600 RPM
         ])
 
-    def _prooven_spark_table(self):
-        # return np.array([
-        #     [ 8,  8,  8,  8,  8,  8],  #  100 rpm (CRANKING Safe Retarded Spark)
-        #     [ 8, 30, 25, 20, 18, 15],  # 600 rpm (Extrapolated the 150 kPa column as retarded for load)
-        #     [38, 33, 28, 26.31, 26.31, 18],  # 2000 rpm
-        #     [42, 37, 32, 27.27, 27.27, 27.27],  # 4000 rpm
-        #     [38, 33, 28, 24, 24, 24],  # 6000 rpm
-        #     [35, 30, 25, 23, 21, 18],  # 8000 rpm
-        # ])
+
+
+
+
+
+
+    # def _proven_ve_table(self):
+    #     return np.array([
+    #         [ 40, 100, 100, 100, 100, 100],  # 100 rpm (Low Cranking VE)
+    #         [ 40,  50,  60,  70, 100, 100],  # 600 rpm
+    #         [ 40,  70,  85,  95, 100, 100],  # 2000 rpm
+    #         [ 40,  80,  95, 102, 105, 105],  # 4000 rpm
+    #         [ 40,  75,  90,  98, 102, 102],  # 6000 rpm
+    #         [ 40,  65,  80,  90,  95,  95],  # 8000 rpm
+    #     ])
+
+
+    # def _proven_spark_table(self):
+    #     # return np.array([
+    #     #     [ 8,  8,  8,  8,  8,  8],  #  100 rpm (CRANKING Safe Retarded Spark)
+    #     #     [ 8, 30, 25, 20,    18,   15],  # 600 rpm (Extrapolated the 150 kPa column as retarded for load)
+    #     #     [38, 33, 28, 26.31, 26.31, 18],  # 2000 rpm
+    #     #     [42, 37, 32, 27.27, 27.27, 27.27],  # 4000 rpm
+    #     #     [38, 33, 28, 24, 24, 24],  # 6000 rpm
+    #     #     [35, 30, 25, 23, 21, 18],  # 8000 rpm
+    #     # ])
         
-        return np.array([
-            [ 8,  8,  8,  8,  8,  8],  #  100 rpm (CRANKING Safe Retarded Spark)
-            [ 8, 30, 25, 20, 18, 15],  # 600 rpm (Extrapolated the 150 kPa column as retarded for load)
-            [38, 33, 28, 23, 21, 18],  # 2000 rpm
-            [42, 37, 32, 27, 25, 22],  # 4000 rpm
-            [38, 33, 28, 25, 23, 20],  # 6000 rpm
-            [35, 30, 25, 23, 21, 18],  # 8000 rpm
-        ])
+    #     return np.array([
+    #         [ 8,  8,  8, 20, 30, 30],  #  100 rpm (CRANKING Safe Retarded Spark)
+    #         [ 8, 30, 25, 20, 30, 30],  # 600 rpm (Extrapolated the 150 kPa column as retarded for load)
+    #         [38, 33, 28, 30, 30, 30],  # 2000 rpm
+    #         [42, 37, 32, 30, 30, 30],  # 4000 rpm
+    #         [38, 33, 28, 25, 23, 20],  # 6000 rpm
+    #         [35, 30, 25, 23, 21, 18],  # 8000 rpm
+    #     ])
   
     
-    def _prooven_afr_table(self):
-        return np.array([
-            [11.5, 11.5, 11.5, 11.5, 11.5, 11.5],  # 100 rpm (CRANKING Very rich)
-            [11.5, 14.7, 14.7, 14.7, 14.0, 14.0],  # 600 rpm (Idle/Low Load)
-            [14.7, 14.7, 14.7, 13.5, 13.0, 13.0],  # 2000 rpm
-            [14.7, 14.7, 14.0, 12.8, 12.5, 12.5],  # 4000 rpm
-            [14.7, 14.0, 13.0, 12.5, 12.2, 12.2],  # 6000 rpm
-            [14.0, 13.5, 12.5, 12.0, 12.0, 12.0],  # 8000 rpm
-        ])
+    # def _proven_afr_table(self):
+    #     return np.array([
+    #         [11.5, 11.5, 11.5, 12,  12,  12],  # 100 rpm (CRANKING Very rich)
+    #         [11.5, 14.7, 14.7, 13.0, 13.0, 13.0],  # 600 rpm (Idle/Low Load)
+    #         [14.7, 14.7, 14.7, 13.5, 13.0, 13.0],  # 2000 rpm
+    #         [14.7, 14.7, 14.0, 12.8, 12.5, 12.5],  # 4000 rpm
+    #         [14.7, 14.0, 13.0, 12.5, 12.2, 12.2],  # 6000 rpm
+    #         [14.0, 13.5, 12.5, 12.0, 12.0, 12.0],  # 8000 rpm
+    #     ])
         
-    def _prooven_injector_table(self):
-        return np.array([
-            [150, 140, 120, 100,  90,  80],  #  100 RPM
-            [155, 140, 120, 100,  90,  80],  #  600 RPM
-            [160, 150, 130, 110, 100,  90],  # 2000 RPM
-            [170, 160, 150, 130, 120, 110],  # 4000 RPM
-            [180, 170, 160, 150, 140, 130],  # 6000 RPM
-            [190, 180, 170, 160, 150, 140],  # 8000 RPM
-        ])
+    # def _proven_injector_end_table(self):
+    #     return np.array([
+    #         [150, 140, 120, 100,  90,  80],  #  100 RPM
+    #         [155, 140, 120, 100,  90,  80],  #  600 RPM
+    #         [160, 150, 130, 110, 100,  90],  # 2000 RPM
+    #         [170, 160, 150, 130, 120, 110],  # 4000 RPM
+    #         [180, 170, 160, 150, 140, 130],  # 6000 RPM
+    #         [190, 180, 170, 160, 150, 140],  # 8000 RPM
+    #     ])
         
     # =========================================================================
     # RL LEARNED Tables

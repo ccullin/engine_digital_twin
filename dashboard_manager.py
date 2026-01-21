@@ -30,6 +30,8 @@ class DashboardManager:
         # set window Focus to the plot
         self._set_focus("plot")
 
+
+
     def get_or_create_figure(self):
         if self.fig is None:
             plt.ion()
@@ -39,11 +41,18 @@ class DashboardManager:
             # Top-left:    Base universal telemetry (text)
             # Bottom-left: Strategy-specific telemetry table (text)
             # Right span:  Full-height strategy chart
-            gs = GridSpec(2, 2, figure=self.fig,
-                          width_ratios=[1, 3],
+            # gs = GridSpec(2, 2, figure=self.fig,
+            #               width_ratios=[1, 3],
+            #               height_ratios=[1, 1],
+            #               wspace=0.4,
+            #               hspace=0.4)  # increased hspace for separation
+            
+            # added addition column for 2 x 2 strategy plots.
+            gs = GridSpec(2, 3, figure=self.fig,
+                          width_ratios=[1, 1.5, 1.5],
                           height_ratios=[1, 1],
                           wspace=0.4,
-                          hspace=0.4)  # increased hspace for separation
+                          hspace=0.4)
 
             # Top-left: Universal base telemetry
             self.base_ax = self.fig.add_subplot(gs[0, 0])
@@ -58,9 +67,17 @@ class DashboardManager:
                                                     fontsize=10, family='monospace')
             self.overlay_text.set_text("─ STRATEGY TELEMETRY ─\n(No data yet)")
 
-            # Right side: Full height strategy panel
-            self.strategy_ax = self.fig.add_subplot(gs[:, 1])
-            self.strategy_ax.set_title("Mode-Specific Panel")
+            # Right side: strategy panel
+            # self.strategy_ax = self.fig.add_subplot(gs[:, 1]) # single combined chart on RHS
+            # self.strategy_ax = self.fig.add_subplot(gs[0, 1]) # top chart on RHS
+            # self.strategy_ax_bottom = self.fig.add_subplot(gs[1, 1]) # bottom chart on RHS
+            
+            self.strategy_ax_topleft = self.fig.add_subplot(gs[0, 1]) 
+            self.strategy_ax_topright = self.fig.add_subplot(gs[0, 2]) 
+            self.strategy_ax_bottomleft = self.fig.add_subplot(gs[1, 1]) 
+            self.strategy_ax_bottomright = self.fig.add_subplot(gs[1, 2]) 
+
+            self.strategy_ax_topleft.set_title("Mode-Specific Panel")
 
             # Clean padding
             self.fig.subplots_adjust(left=0.05, right=0.95, top=0.93, bottom=0.07)
@@ -70,7 +87,7 @@ class DashboardManager:
             
             self.toolbar = self.fig.canvas.toolbar  # Keep reference
 
-        return self.fig, self.base_ax, self.strategy_ax
+        return self.fig, self.base_ax, self.strategy_ax_topleft, self.strategy_ax_topright, self.strategy_ax_bottomleft, self.strategy_ax_bottomright
     
     def update_base_telemetry(self, cycle_count, data):
         if not self.enabled:
@@ -88,10 +105,11 @@ class DashboardManager:
             f"Cycle:          {cycle_count:8.0f}",
             "",
             "─ sensors ─",
+            f"Throttle:       {sensors.TPS_percent:8.0f} %",
             f"RPM:            {sensors.rpm:8.0f}",
             f"RPM avg:        {np.mean(sensors.rpm_history):8.0f}",
             f"MAP:            {sensors.MAP_kPa:8.1f} kPa",
-            f"AFR:            {sensors.AFR:8.3f}",
+            f"AFR:            {sensors.afr:8.3f}",
             f"CLT:            {sensors.CLT_C:8.1f} °C",
             f"Knock:          {sensors.knock:8.3f}",
             "",
@@ -126,9 +144,9 @@ class DashboardManager:
         """Return axes for strategy to plot on"""
         if not self.enabled:
             return None
-        _, _, strategy_ax = self.get_or_create_figure()
+        _, _, ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = self.get_or_create_figure()
         # strategy_ax.cla()  # clear previous strategy plot
-        return strategy_ax
+        return ax_topleft, ax_topright, ax_bottomleft, ax_bottomright
 
     # def create_or_update_figure(self, key, create_func, update_func, data=None):
     #     if key not in self.figures:

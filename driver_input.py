@@ -52,9 +52,10 @@ class DriverInput:
         elif mode == "dyno":
             return strategies.DynoStrategy()
         elif mode == "roadtest":
-            return strategies.RoadTestStrategy()
-        else:
-            return strategies.IdleStrategy()
+            return strategies.RoadtestStrategy()
+        elif mode == "motor":
+            return strategies.MotoringStrategy()
+
     
     # ---------------------------------------------------------------------------------
     # def _set_tps(self):

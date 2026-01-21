@@ -14,10 +14,14 @@ from dashboard_manager import DashboardManager  # ← New real-time manager
 import numpy as np
 import sys
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--mode", choices=["idle", "wot", "dyno", "roadtest", "rl"], default="wot")
+
+parser = argparse.ArgumentParser(description="Engine Digital Twin")
+parser.add_argument("--mode", choices=["idle", "wot", "dyno", "roadtest", "motor"], required=True)
 parser.add_argument("--debug", action="store_true", default=False)
-parser.add_argument("--cycles", type=int, default=30)
+parser.add_argument("--cycles", type=int, default=3, help="The number of Engine cycles to run")
+parser.add_argument("--rpm", type=int, default=None, help="override the default rpm for the mode")
+parser.add_argument("--can_fuel", action="store_true", default=False, help="Enable fuel injection.  Requires --mode motor")
+parser.add_argument("--can_spark", action="store_true", default=False, help="Enable spaek & injection. Requires --mode motor")
 args = parser.parse_args()
 
 class SimulationManager:
@@ -60,7 +64,9 @@ class SimulationManager:
 if __name__ == "__main__":
     driver = DriverInput(mode=args.mode)
     ecu = ECUController()
-    engine = EngineModel(rpm=driver.strategy.start_rpm)
+    
+    rpm = args.rpm if args.rpm else driver.strategy.start_rpm
+    engine = EngineModel(rpm=rpm)
 
     logger = None
     dashboard_manager = None
@@ -76,17 +82,24 @@ if __name__ == "__main__":
     cycle_count = 0
 
     try:
+        if hasattr(driver.strategy, 'motoring_enabled'):
+            system.ecu.is_motoring = system.driver.strategy.motoring_enabled
+            system.ecu.fuel_enabled = True if args.can_spark else args.can_fuel
+            system.ecu.spark_enabled = args.can_spark
+            system.engine.crank_rpm = args.rpm if args.rpm else 250
+
+            
         exit_now = False
         while cycle_count < args.cycles and not exit_now:
             exit_now = dashboard_manager.stopped if dashboard_manager else False
             
             sensors, engine_data_dict, ecu_outputs_dict = system.run_one_cycle(cycle_count)
             data = (sensors, engine_data_dict, ecu_outputs_dict)
-            cycle_count += 1
+
 
             # Optional: old-style bulk update every 10 cycles (can keep or remove)
             # if not args.debug and cycle_count % 10 == 0:
-            if not args.debug:
+            if not args.debug:# and cycle_count > 1:
                 # if logger:
                 #     logger.log(...)
                            
@@ -100,6 +113,7 @@ if __name__ == "__main__":
                             data=data
                         )
                     dashboard_manager.draw()
+            cycle_count += 1
 
 
     except KeyboardInterrupt:

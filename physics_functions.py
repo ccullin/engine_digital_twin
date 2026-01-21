@@ -9,11 +9,14 @@
 #
 # Copyright (c) 2025 Chris Cullin
 
+from typing import TYPE_CHECKING
 import numpy as np
 import constants as c
 import math
 import sys
 
+if TYPE_CHECKING:
+    from engine_model import Valve
 
 # --- Utility Functions ---
 
@@ -32,11 +35,17 @@ def eng_speed_rad(rpm):
 
 def v_cyl(theta, A_piston, CV):
     """
+    Docstring for v_cyl
+    
+    :param theta: np array of thetas 0-719
+    :param A_piston: area of piston m^2
+    :param CV: clearance volume m^3
+
     Calculates cylinder volume based on crank angle (theta).
     This uses the slider-crank mechanism geometry (theta=0 is TDC compression).
 
     The standard formula uses piston displacement S from TDC (TDC is where V=CV).
-    V = V_clearance + A_piston * S
+    V = V_clearance + A_piston * S units m^3 measured by degree.
     """
     R_stroke = c.RADIUS_CRANK  # Crank radius (half stroke)
     L_conrod = c.LEN_CONROD  # Connecting rod length
@@ -55,107 +64,130 @@ def v_cyl(theta, A_piston, CV):
 
 # --- Thermal Cycle Functions (Heat & Work) ---
 
-
-# === physics_functions.py === REPLACE THIS ENTIRE FUNCTION ===
-def calc_vibe_heat_release(
-    rpm, lambda_, theta, Q_total, theta_start, duration_ref, a_vibe=6.908, m_vibe=2.0
-):
-    """
-    Dynamic Wiebe function with RPM and lambda-sensitive burn duration.
-    This is the REAL fix that makes cold-start at 250 RPM actually ignite.
-    """
-
-    # DO NOT let burn be too slow at low RPM → this is what was killing cold start
-    rpm_factor = max(rpm / 1000.0, 0.25)  # Never go below 0.25 (250 RPM → 0.25)
-    lambda_factor = max(lambda_, 0.8) ** 0.3  # Rich = faster burn
-
-    # Dynamic combustion duration in crank degrees
-    # 40° at 6000 RPM → ~100° at 250 RPM → perfect cold-start ignition
-    duration = max(25.0, 38.0 * (rpm_factor**-0.82) * (lambda_factor**-0.6))  # min 25°
-
+def calc_wiebe_fraction(theta, theta_start, duration, a_vibe=6.908, m_vibe=2.0):
+    """ this version is not sub-step friendly, so changed approach to fraction """
+    
     delta_theta = theta - theta_start
+    
     if delta_theta <= 0:
         return 0.0
+    if delta_theta >= duration:
+        return 1.0
+        
+    # The standard Wiebe cumulative S-curve formula
+    return 1.0 - np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
 
-    x = 1.0 - np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
-    dq_dtheta = (
-        a_vibe
-        * (m_vibe + 1)
-        / duration
-        * (delta_theta / duration) ** m_vibe
-        * np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
-    )
+""" this version is not sub-step friendly, so changed approach to fraction """
+# def calc_vibe_heat_release(
+#     rpm, lambda_, theta, Q_total, theta_start, duration_ref, a_vibe=6.908, m_vibe=2.0
+# ):
+#     """
+#     Dynamic Wiebe function with RPM and lambda-sensitive burn duration.
+#     This is the REAL fix that makes cold-start at 250 RPM actually ignite.
+#     """
 
-    return dq_dtheta * Q_total
+#     # DO NOT let burn be too slow at low RPM → this is what was killing cold start
+#     rpm_factor = max(rpm / 1000.0, 0.25)  # Never go below 0.25 (250 RPM → 0.25)
+#     lambda_factor = max(lambda_, 0.8) ** 0.3  # Rich = faster burn
 
+#     # Dynamic combustion duration in crank degrees
+#     # 40° at 6000 RPM → ~100° at 250 RPM → perfect cold-start ignition
+#     duration = max(25.0, 38.0 * (rpm_factor**-0.82) * (lambda_factor**-0.6))  # min 25°
 
-def calc_woschni_heat_loss(rpm, P_curr, T_curr, V_curr, dV_d_theta, theta_delta):
+#     delta_theta = theta - theta_start
+#     if delta_theta <= 0:
+#         return 0.0
+
+#     x = 1.0 - np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
+#     dq_dtheta = (
+#         a_vibe
+#         * (m_vibe + 1)
+#         / duration
+#         * (delta_theta / duration) ** m_vibe
+#         * np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
+#     )
+
+#     return dq_dtheta * Q_total
+
+def calc_woschni_heat_loss(theta, rpm, P_curr, T_curr, V_curr, T_wall, V_clearance, theta_delta):
     """
-    Calculates the rate of heat loss to the walls (dQ_w/d_theta) using the Woschni model.
-
-    dQ_w/d_theta = (h_g * A_w * (T_curr - T_wall)) / (omega * 60 / (2*pi)) * (pi/180) (Conversion for d/dtheta)
-
-    The term in the ODE formulation is dQ_w/d_theta.
+    Docstring for calc_woschni_heat_loss
+    
+    :param theta: Description
+    :param rpm: current rpm
+    :param P_curr: Cylinder P (Pa)
+    :param T_curr: Cylinder T (K)
+    :param V_curr: Cylinder volume, inc. V clearnace (m3)
+    :param T_wall: Cylinder wall temp (K)
+    :param V_clerance:  the Cylinder clearnace volume (m3)
+    :param theta_delta: (sub step size in CAD, e.g. 0.2 if subloop is 5)
+    
+    Calculates dQ_w/d_theta using the updated Woschni model with 
+    instantaneous piston velocity and SI-standard coefficients.
     """
-
-    # Angular speed (rad/s)
-    omega = eng_speed_rad(rpm)
-
-    # Woschni constants
-    C1 = c.C_WALL
-    C2 = c.C_TURB
-
-    # Safety Guard
-    if T_curr <= 50.0 or P_curr <= 1000.0:  # Catch garbage states
-        return 0.0
-    if np.isnan(T_curr) or np.isnan(P_curr):
+    # 1. Physical Constants & Engine Geometry
+    omega = 2.0 * np.pi * (rpm / 60.0) # rad/s
+    
+    # 2. Safety Guards
+    if T_curr <= 50.0 or P_curr <= 1000.0 or np.isnan(T_curr):
         return 0.0
 
-    T_curr = max(T_curr, 300.0)  # Clamp to prevent **-0.5 → NaN
-    P_curr = max(P_curr, 1e5)
+    # 3. Gas Velocity Calculation (Updates 1 & 2)
+    # Use the geometric factor (dS/dtheta) to find instantaneous velocity (m/s)
+    # V_piston = omega * dS/dtheta (where dS/dtheta is in meters/rad)
+    v_factor = calc_piston_speed_factor(theta) 
+    u_p_instant = abs(omega * v_factor)
 
-    # Mean piston speed (S_p) - constant over a cycle for Woschni's formula,
-    # but here we use a simplified version for the heat transfer coefficient.
-    S_p = 2.0 * c.STROKE * (rpm / 60.0)  # (m/s)
+    # # C1 is typically 2.28 for intake/compression
+    # # C2 is 0 for motoring (no combustion-induced pressure rise)
+    # C1 = 2.28
+    # W_vel = C1 * u_p_instant
+    
+    # C1: 2.28 (Compression/Power), 6.18 (Gas Exchange)
+    C1 = 2.28 if (180 <= theta <= 540) else 6.18
+    
+    # Simple C2 Logic: Only apply if we are in the combustion window
+    # and pressure is significantly above atmospheric.
+    C2 = 0.00324
+    pressure_rise_term = 0.0
+    if 340 <= theta <= 420 and P_curr > 1.2e5:
+        # A simple approximation of the pressure-driven velocity surge
+        # V_d is displaced volume, T_r/P_r/V_r are reference states (use IVC values)
+        pressure_rise_term = C2 * (c.V_DISPLACED * T_curr / (P_curr * V_curr)) * (P_curr - 1e5)
+    
+    W_vel = (C1 * u_p_instant) + pressure_rise_term
 
-    # Instantaneous Piston Speed (u_p) is not S_p, but dL/dt.
-    # dL/dt = dL/dtheta * dtheta/dt = (dV/dtheta / A_piston) * omega
-    # We use S_p in the h_g correlation for simplicity and stability.
+    # 4. Heat Transfer Coefficient h_g (Update 3)
+    # Using the standard SI Woschni correlation:
+    # h_g = 3.26 * B^(-0.2) * P^0.8 * T^(-0.55) * w^0.8
+    # B = Bore (m), P = Pressure (Pa), T = Temp (K), w = velocity (m/s)
+    P_bar = P_curr / 1e5
+    h_g = 3.26 * (c.BORE**-0.2) * (P_bar**0.8) * (T_curr**-0.55) * (W_vel**0.8)
 
-    # Gas velocity (W) correlation: Woschni uses W = C1*S_p + C2*V_d*T_ref/(P_ref*V_ref)*(P_curr/T_curr)
-    # Simplifying W velocity component to be proportional to S_p (mean piston speed)
-    W_vel = C1 * S_p + C2 * S_p  # A highly simplified W velocity model
+    # 5. Instantaneous Surface Area (A_w)
+    # Cylinder wall area = pi * Bore * instantaneous_height
+    # Instantaneous height x = V_curr / A_piston
+    V_bore = V_curr - V_clearance
+    dist_from_tdc = V_bore / c.A_PISTON
+    A_w = (2 * c.A_PISTON) + (np.pi * c.BORE * dist_from_tdc)
 
-    # Gas-side heat transfer coefficient (h_g) correlation:
-    # h_g = 130 * V_curr^(-0.06) * P_curr^(0.8) * T_curr^(-0.5) * W_vel^(0.8)
+    # 6. Heat Loss Rate & Conversion
+    # dQ/dt = h_g * A * (T_gas - T_wall)
+    dQ_w_dt = h_g * A_w * (T_curr - T_wall)
+    
+    # Scale heat transfer based on RPM to allow starting
+    # 0.2 at cranking (200rpm) ramp to 1.0 at idle (900rpm)
+    thermal_scaling = np.clip((rpm - 400) / (1200 - 400) * 0.9 + 0.1, 0.1, 1.0) # should be required no P_curr -> P_bar
+    dQ_w_dt = h_g * A_w * (T_curr - T_wall)
 
-    # Constants from Woschni (simplified)
-    const_woschni = 130.0 * (V_curr ** (-0.06))  # A constant term
 
-    h_g = const_woschni * (P_curr**0.8) * (T_curr**-0.5) * (W_vel**0.8)
-
-    # Instantaneous Wall Area (A_w) - simplified to be piston face + cylinder wall area
-    # A_w = A_piston + (pi * BORE) * (L_conrod + R_stroke - pos_piston)
-    # For simplicity, we assume A_w is roughly constant near TDC
-    A_w = c.A_PISTON + np.pi * c.BORE * c.STROKE * (
-        0.5 + 0.5 * np.cos(np.deg2rad(180))
-    )  # Rough average
-
-    # Heat loss rate (dQ_w/dt) = h_g * A_w * (T_curr - T_wall)
-    dQ_w_dt = h_g * A_w * (T_curr - c.T_WALL)
-
-    # Convert to dQ_w/d_theta: dQ_w/d_theta = dQ_w/dt * (dt/d_theta) = dQ_w/dt / omega
-    # dQ_w/d_theta = dQ_w/dt / (omega in rad/s)
-
-    # Check for division by zero if engine is stalled
-    if omega < 1.0:  # 1 rad/s is ~9.5 RPM
+    # Convert J/s to J/deg: (dQ/dt) / (dtheta/dt) * (rad to deg)
+    if omega < 1.0: 
         return 0.0
-
-    dQ_w_d_theta = dQ_w_dt / omega  # [J/rad]
-    dQ_w_d_theta *= np.pi / 180.0  # Convert [J/rad] to [J/deg]
+        
+    dQ_w_d_theta = (dQ_w_dt / omega) * (np.pi / 180.0)
 
     return dQ_w_d_theta
-
 
 def calc_piston_speed_factor(theta):
     """
@@ -283,69 +315,144 @@ def theta_to_720(theta):
     return theta % 720.0
 
 
-def calc_valve_lift_vectorized(
-    theta_array: np.ndarray, valves, valve: str
-) -> np.ndarray:
+def calc_valve_lift_vectorized(theta_array: np.ndarray, valve: Valve) -> np.ndarray:
     """
     Vectorized version of calc_valve_lift — returns array of lifts for entire theta_array
     """
 
-    ca = theta_to_720(theta_array)
-    
-    if valve == 'intake':
-        open_ca = valves.IVO 
-        close_ca = valves.IVC 
-        max_lift = valves.intake_lift_mm
-    else:
-        open_ca = valves.EVO
-        close_ca = valves.EVC
-        max_lift = valves.exhaust_lift_mm
+    ca = theta_array % 720.0 # crank angle
 
-    # Mid lift and half duration
+    open_ca = valve.open_angle
+    close_ca = valve.close_angle
+    
+    # 1. Calculate duration and position
     duration = (close_ca - open_ca) % 720
-    half_dur = duration / 2.0
-    mid_ca = (open_ca + half_dur) % 720 # centre of the lift 
+    rel_angle = (ca - open_ca) % 720
+    mid_dur = duration / 2.0
     
-    dist = (ca - mid_ca + 360) % 720 - 360
+    lift = np.zeros_like(ca, dtype=float)
+    active = (rel_angle <= duration)
     
+    # 2. Use mm here (e.g., 9.5)
+    l_max = valve.max_lift
 
-    # Angle from mid-lift: -180 to +180
-    phi_deg = (dist / half_dur) * 180.0
-
-    # Cosine profile
-    lift = np.zeros_like(ca)
-    active = np.abs(phi_deg) <= 180.0
-    lift[active] = max_lift * (1.0 + np.cos(np.radians(phi_deg[active]))) / 2.0
-
+    phi_deg = (rel_angle[active] - mid_dur) / mid_dur * 180.0
+    # p < 1.0 makes it 'fatter' (more area). p > 1.0 makes it 'pointier'.
+    p = 0.4
+    lift[active] = l_max * ((1.0 + np.cos(np.radians(phi_deg))) / 2.0)**p
+    
     return lift
 
 
-def calc_valve_curtain_vectorized(
-    theta_array: np.ndarray, valves, valve: str, rpm: float
-) -> np.ndarray:
-
-    lift_mm = calc_valve_lift_vectorized(theta_array, valves, valve)
-
-    if valve == "intake":
-        diam_mm = valves.intake_diam_mm
-        Cd = 0.68 * calc_discharge_coeff(rpm)
-    else:
-        diam_mm = valves.exhaust_diam_mm
-        Cd = 0.7
-
-    curtain_area = np.pi * diam_mm * lift_mm
-
-    # Apply real-world discharge coefficient variation
-    # Cd increases slightly with lift/diameter ratio
-    L_over_D = lift_mm / diam_mm
-    Cd_effective = Cd * (1.0 + 0.25 * L_over_D)  # matches dyno data
-    Cd_effective = np.clip(Cd_effective, 0.0, 0.85)
-
-    return Cd_effective * curtain_area #mm2
- 
+def calc_valve_area_vectorized(theta_array: np.ndarray, valve: Valve) -> np.ndarray:
+    
+    # Get lift in mm (0 to 9.5)
+    lift_mm = calc_valve_lift_vectorized(theta_array, valve)
+    
+    # Get diameter in mm (e.g., 32.0)
+    diam_mm = valve.diameter
+    
+    # Formula: Area = pi * D * L
+    # We divide by 1,000,000 to get m^2
+    area_m2 = (np.pi * diam_mm * lift_mm) / 1e6
+    
+    return area_m2
 
 
 # --- Flow and Mass Functions ---
+
+def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl, P_extern, T_extern, R_extern, g_extern, is_intake = True):
+    """
+    P_cyl, T_cyl, R_cyl, g_cyl: State INSIDE the cylinder
+    P_manifold, T_manifold, R_manifold, g_manifold: State OUTSIDE (Manifold for intake, Atmosphere for exhaust)
+    """
+    if A_valve < 1e-9 or lift < 1e-5:
+        return 0.0, 0.0
+
+    # Identify Upstream (Source) and Downstream (Sink)
+    if P_cyl >= P_extern:
+        # Flowing OUT of cylinder (Exhaust or Intake Reversion)
+        P_up, T_up, R_up, gamma = P_cyl, T_cyl, R_cyl, g_cyl
+        P_down = P_extern
+        direction = -1.0 # Negative means leaving cylinder
+    else:
+        # Flowing INTO cylinder (Normal Intake or Exhaust Backflow/EGR)
+        P_up, T_up, R_up, gamma = P_extern, T_extern, R_extern, g_extern
+        P_down = P_cyl
+        direction = 1.0 # Positive means entering cylinder
+
+    # --- Standard Isentropic Math ---
+    pr = P_down / max(P_up, 1.0)
+    pr_crit = (2.0 / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
+    
+    Cd = _calc_physics_Cd(lift, diameter)
+    # Cd = 0.7 if not is_intake else Cd
+    # Cd=1.0
+
+    if pr <= pr_crit:
+        # Choked Flow
+        mdot = (Cd * A_valve * P_up * np.sqrt(gamma / (R_up * T_up)) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1))))
+    else:
+        # Subcritical Flow
+        pr_eff = min(pr, 0.9999)
+        mdot = (Cd * A_valve * P_up * np.sqrt(2 * gamma / (R_up * T_up * (gamma - 1)) * (pr_eff**(2/gamma) - pr_eff**((gamma+1)/gamma))))
+
+    # Damping for stability near zero pressure delta
+    # damping = 1.0
+    # if pr > 0.98:
+    #     damping = max(0.0, (1.0 - pr) / (1.0 - 0.98))
+    
+    return mdot * direction, Cd
+
+def _calc_physics_Cd(lift, diameter):
+    L_D = lift / diameter
+    
+    # Standard Taylor/Heywood Correlation for Poppet Valves
+    if L_D <= 0.05:
+        # Initial opening / viscous regime
+        return 0.30 + (4.0 * L_D) 
+    elif L_D <= 0.20:
+        # Transitional regime
+        return 0.50 + (1.33 * (L_D - 0.05))
+    elif L_D <= 0.25:
+        # Peak detachment efficiency
+        return 0.70
+    else:
+        # High-lift port restriction (Geometric drop)
+        # As L/D increases, the effective Cd must drop because 
+        # the port cross-section limits the mass flow.
+        return 0.70 - 0.8 * (L_D - 0.25)
+
+def _calc_dynamic_discharge_coeff(rpm, lift, diameter, is_intake):
+    if lift <= 0.0 or diameter <= 0.0:
+        return 0.0
+    
+    # lift and diameter are in meters
+    l_over_d = lift / diameter 
+
+    # 1. Low-lift penalty
+    if l_over_d < 0.03:
+        low_lift_factor = 0.20 + 6.67 * l_over_d
+    elif l_over_d < 0.10:
+        low_lift_factor = 0.40 + 3.0 * (l_over_d - 0.03)
+    else:
+        low_lift_factor = 0.70 + 0.8 * (l_over_d - 0.10)
+    
+    # 2. Geometry boost
+    geo_boost = 1.0 + 0.2 * min(l_over_d / 0.25, 1.0)
+
+    # 3. Mach Index (Z) - Using Piston Speed
+    # sp = mean piston speed (m/s)
+    sp = (2 * c.STROKE * rpm) / 60.0 
+    
+    # Z-index formula (all units in meters/seconds now)
+    z = ((c.BORE / diameter)**2) * (sp / 340.0)
+    # this is causes restrictive flow in combination withe cosine CAM profile.
+    # choke_factor = np.exp(-0.6 * (z / 0.5)**2)
+    choke_factor = np.exp(-0.2 * (z / 0.5)**2)
+
+    Cd = 0.70 * low_lift_factor * geo_boost * choke_factor
+    return np.clip(Cd, 0.15, 0.90)
 
 
 def calc_discharge_coeff(rpm):
@@ -508,80 +615,127 @@ def calc_mass_burned_rate(theta, M_fuel_total):
 
 # --- Thermodynamic Integration ---
 
-
 def integrate_first_law(
-    P_curr,
-    T_curr,
-    M_curr,
-    V_curr,
-    Delta_M,
-    Delta_Q_in,
-    Delta_Q_loss,
-    dV_d_theta,
-    gamma,
-    theta_delta,
+    P_curr, T_curr, M_curr, V_curr, Delta_M, Delta_Q_in, Delta_Q_loss, 
+    dV_d_theta, gamma, theta_delta, T_manifold, R_spec,
+    cycle=None, CAD=None, substep=None # for debug purposes only
 ):
-    """
-    First-law integration with built-in physical stability.
-    This version is used in production engine simulation tools.
-    """
-    # Prevent catastrophic states before any math
-    if M_curr < 1e-8:
-        M_curr = 1e-8
-    if V_curr < 1e-8:
-        V_curr = 1e-8
-
-    # Net heat release rate (combustion + wall heat)
-    dQ_net_d_theta = (Delta_Q_in - Delta_Q_loss) / theta_delta
-
-    # Mass flow rate into/out of cylinder
+    # 1. Physical Safeguards
+    M_curr = max(M_curr, 1e-9)
+    V_curr = max(V_curr, 1e-9)
+    
+    # 2. Rates
     dM_d_theta = Delta_M / theta_delta
+    dQ_net_rate = (Delta_Q_in / theta_delta) - Delta_Q_loss 
 
-    # Standard open-system differential equation for pressure
-    dP_d_theta = (
-        gamma * (P_curr / M_curr) * dM_d_theta
-        + gamma
-        * (P_curr / V_curr)
-        * (-dV_d_theta)  # note sign: dV_d_theta is positive on compression
-        + (gamma - 1.0) / V_curr * dQ_net_d_theta
-    )
+    # 3. PREDICTOR STEP
+    T_flow_pred = T_manifold if Delta_M >= 0 else T_curr
+    
+    term_heat = (gamma - 1.0) * dQ_net_rate
+    term_work = -gamma * P_curr * dV_d_theta
+    term_mass = gamma * R_spec * T_flow_pred * dM_d_theta
+    
+    dP_d_theta_pred = (term_heat + term_work + term_mass) / V_curr
+    
+    # Predict midpoint states
+    P_mid = P_curr + dP_d_theta_pred * (0.5 * theta_delta)
+    V_mid = V_curr + dV_d_theta * (0.5 * theta_delta)
+    M_mid = M_curr + (0.5 * Delta_M)
+    T_mid = (P_mid * V_mid) / (M_mid * R_spec)
 
-    # Explicit Euler step
-    P_next = P_curr + dP_d_theta * theta_delta
 
-    # ─────────────────── PHYSICALLY JUSTIFIED STABILITY (this is NOT cheating) ───────────────────
-    # In a real engine, pressure cannot rise more than ~15–20 bar per crank degree at 9000 rpm
-    # This is due to finite burn rate, blow-by, crevice flow, heat loss, etc.
-    ## REMOVED as this could mask performance/failure when in RL mode
-    # max_allowed_dP = (
-    #     1.8e6 * theta_delta
-    # )  # ~18 bar per degree → totally safe even at 12k rpm
-    # if P_next > P_curr + max_allowed_dP:
-    #     P_next = P_curr + max_allowed_dP  # This is the ONE line that saves everything
-
-    # Never allow deep vacuum (numerical death)
-    P_next = max(
-        P_next, 8_000.0
-    )  # ~0.08 bar — real engines go to ~0.25 bar, this is generous
-
-    # Update mass and volume
+    # 4. CORRECTOR STEP
+    T_flow_corr = T_manifold if Delta_M >= 0 else T_mid
+    
+    term_work_mid = -gamma * P_mid * dV_d_theta
+    term_mass_mid = gamma * R_spec * T_flow_corr * dM_d_theta
+    
+    dP_d_theta_final = (term_heat + term_work_mid + term_mass_mid) / V_mid
+    
+    # 5. FINAL STATE
+    P_next = P_curr + dP_d_theta_final * theta_delta
     M_next = M_curr + Delta_M
-    M_next = max(M_next, 1e-7)  # prevent division by zero
-
     V_next = V_curr + dV_d_theta * theta_delta
-    V_next = max(V_next, 1e-8)
+    T_next = (P_next * V_next) / (M_next * R_spec)
 
-    # Temperature from ideal gas law
-    T_next = P_next * V_next / (M_next * c.R_SPECIFIC_AIR)
+    # # --- DEBUG SECTION ---
+    # # We only care about steps where mass is actually moving
+    # is_danger_zone = (CAD >= 680) or (CAD <= 40) or (180 <= CAD <= 240)
+    # if is_danger_zone:
+    #     print(
+    #         f"DEBUG_cycle {cycle}/{CAD}/{substep}  "
+    #         f"P_curr:{P_curr:6.0f}->{P_next:6.0f} T_curr:{T_curr:3.0f}->{T_next:3.0f} V_curr:{V_curr:9.2e}->{V_next:9.2e}" 
+    #         f"Delta_M:{Delta_M:9.2e} dM_d_theta:{dM_d_theta:9.2e} " 
+    #     )
+    #     print(
+    #         f"            term_heat:{term_heat:6.3f} term_work:{term_work:6.3f} term_mass:{term_mass:6.3f} "
+    #     )
+    # else:
+    #     # Print every 20 degrees elsewhere just to monitor progress
+    #     if CAD % 20 == 0 and substep == 0:
+    #         print(f"DEBUG_STABLE | θ:{cycle}/{CAD} | P:{P_curr:.0f} | T:{T_curr:.1f}")
+    
+    
+    
+    # We only care about steps where mass is actually moving
+    # if CAD > 710 or CAD < 230:
+    #     if CAD == 710 or CAD == 719 or CAD % 10 == 0 or CAD == 228:
+    #         if abs(Delta_M) > 1e-12:
+    #             print(f"DEBUG_FLOW | CAD:{CAD if CAD is not None else '?'}/{substep if substep is not None else '?'}")
+    #             print(f"  Direction: {'IN' if Delta_M > 0 else 'OUT'} | Delta_M: {Delta_M:8.2e}")
+    #             print(f"  Enthalpy : T_manifold:{T_manifold:.1f} | T_cyl:{T_curr:.1f} | T_USED:{T_flow_corr:.1f}")
+                
+    #             # This checks if we are accidentally cooling the engine during exhaust
+    #             if Delta_M < 0 and abs(T_flow_corr - T_curr) > 50:
+    #                 print("  !!! ALERT: Heat Trap Detected. Removing hot gas at cold temperature.")
+    # ------------------
+    
+    return P_next, T_next
 
-    # Light temperature sanity (optional, but recommended)
-    T_next = np.clip(T_next, 220.0, 3800.0)
+# def integrate_first_law(
+#     P_curr, T_curr, M_curr, V_curr, Delta_M, Delta_Q_in, Delta_Q_loss, 
+#     dV_d_theta, gamma, theta_delta, T_inflow, R_spec
+# ):
+#     # Prevent catastrophic states
+#     M_curr = max(M_curr, 1e-8)
+#     V_curr = max(V_curr, 1e-8)
 
-    # Very light smoothing — removes high-frequency numerical noise only
-    P_final = 0.96 * P_next + 0.04 * P_curr
-    T_final = 0.97 * T_next + 0.03 * T_curr
+#     # Pre-compute rates
+#     dM_d_theta = Delta_M / theta_delta
+#     dQ_loss_rate = Delta_Q_loss 
+#     dQ_in_rate = Delta_Q_in / theta_delta
+    
+#     dQ_net_d_theta = dQ_in_rate - dQ_loss_rate
 
-    return P_final, T_final
+#     # Next states
+#     M_next = max(M_curr + Delta_M, 1e-7)
+#     V_next = max(V_curr + dV_d_theta * theta_delta, 1e-8)
+
+#     # Use the pressure at the start of the step for a stable derivative
+#     term_heat = (gamma - 1.0) * dQ_net_d_theta
+#     term_work = -gamma * P_curr * dV_d_theta
+#     term_mass = gamma * R_spec * T_inflow * dM_d_theta
+  
+#     # Predictor step
+#     dP_initial = (term_heat + term_work + term_mass) / V_curr
+#     P_mid = P_curr + dP_initial * (0.5 * theta_delta)
+#     V_mid = V_curr + dV_d_theta * (0.5 * theta_delta)
+
+#     # Use P_mid and V_mid for the real derivative
+#     term_work_mid = -gamma * P_mid * dV_d_theta
+#     dP_d_theta_final = (term_heat + term_work_mid + term_mass) / V_mid
+#     P_next = P_curr + dP_d_theta_final * theta_delta
+
+
+#     # Temperature from Ideal Gas Law (The most physical way to derive T)
+#     T_next = (P_next * V_next) / (M_next * R_spec)
+
+#     # Weighted smoothing to maintain numerical stability
+#     # P_final = 0.9 * P_next + 0.1 * P_curr
+#     # T_final = 0.95 * T_next + 0.05 * T_curr
+    
+#     # return P_final, T_final, M_next
+#     return P_next, T_next
 
 
 # --- Engine Performance Functions ---
@@ -592,33 +746,60 @@ def calc_pumping_losses(P_cyl, V_list, theta_list):
     pass
 
 
-def calc_friction_torque_per_degree(rpm):
-    """ """
 
-    # # Realistic cold friction for 2.0 L NA 4-cyl (total engine)
-    # if rpm < 1000:
-    #     base = 85.0          # high when cold
-    # elif rpm < 3000:
-    #     base = 65.0
-    # else:
-    #     base = 45.0
+def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
+    """
+    calculates instantaneous friction for a cylinder based on 
+    speed of rotation, oil and piston ring load.
+    """
+    # 1. Get kinematics
+    geom_factor = calc_piston_speed_factor(theta)
+    omega = (rpm * 2 * np.pi) / 60.0
+    v_piston_inst = abs(omega * geom_factor) # Instantaneous speed m/s
+    
+    # 2. Viscosity Factor (Your existing logic)
+    visc_factor = max(1.0, 2.5 * np.exp(-0.025 * (clt - 20)))
+    
+    # 3. Calculate Forces (Newton) for single cylinder
+    C_VISCOUS = 5.0 # Ns/m
+    C_RING_LOAD = 0.00004 # m^2
+    f_viscous = C_VISCOUS * v_piston_inst * visc_factor
+    f_pressure = C_RING_LOAD * p_cyl # p_cyl in Pascals
+    
+    # 4. Total Force to Torque
+    # Moment arm is geom_factor
+    t_friction = (f_viscous + f_pressure) * abs(geom_factor)
+    
+    return t_friction
 
-    # Linear + quadratic — but with sane coefficients
-    # friction = base + 0.018 * rpm + 0.0000025 * rpm * rpm
-    # updated_friction =  15.0 + 0.008 * rpm + 0.000002 * rpm**2
 
-    T_friction = 42 + 0.01 * rpm + 0.001 * rpm * rpm
-    # T_friction = 42 + 0.0115 * rpm + 0.00000295 * rpm*rpm
-    # Optional: very gentle roll-off below 150 RPM (only for stall recovery)
-    if rpm < 150:
-        T_friction *= rpm / 150.0
+""" this function over simplied Friction and return FMEP, the average for 720 cycle """
+def calc_friction_torque_per_degree(rpm, clt):
+    """
+    Generic Friction based on Mean Piston Speed and Displacement.
+    """
+    # 1. Mean Piston Speed (m/s)
+    # Sp = 2 * Stroke * RPM / 60
+    piston_speed_mean = (2 * c.STROKE * rpm) / 60.0
+    
+    # 2. Friction Mean Effective Pressure (FMEP) in Bar
+    # Accessory drag + Hydrodynamic (bearings) + Windage (square of speed)
+    # These coefficients are standard for naturally aspirated SI engines.
+    fmep_bar = 0.35 + (0.09 * piston_speed_mean) + (0.005 * piston_speed_mean**2)
+    
+    # 3. Adjust for Oil Viscosity (CLT effect)
+    # Based on your rising CLT, this factor will decrease from ~2.5 to 1.0.
+    visc_factor = max(1.0, 2.5 * np.exp(-0.025 * (clt - 20)))
+    fmep_bar *= visc_factor
+    
+    # 4. Convert FMEP to Torque (Nm)
+    # Torque = (FMEP_Pa * Displacement_m3) / (4 * pi)
+    v_total_m3 = c.V_DISPLACED * c.NUM_CYL
+    t_friction_total = (fmep_bar * 1e5 * v_total_m3) / (4 * np.pi)
+    
+    return t_friction_total / 720.0
+    # return t_friction_total
 
-    # return min(friction, 180.0)
-    # return updated_friction
-    return T_friction / 720.0
-
-
-# physics_functions.py
 
 
 def calc_coolant_temperature_increment(
@@ -648,7 +829,7 @@ def calc_coolant_temperature_increment(
     return dT
 
 
-def calc_thermostat_cooling_rate(clt: float, t_ambient: float = 20.0) -> float:
+def calc_thermostat_cooling_rate(clt: float, t_ambient: float = c.T_AMBIENT) -> float:
     """
     Simple radiator + thermostat model.
     Returns cooling rate in °C per time step.
@@ -660,19 +841,19 @@ def calc_thermostat_cooling_rate(clt: float, t_ambient: float = 20.0) -> float:
     return 0.00015 * excess**1.8  # tuned to real data
 
 
-def update_coolant_temp(current_clt, last_cycle, rpm, dt=0.02):
+def update_coolant_temp(current_clt, brake_torque_nm, rpm):
     dT = calc_coolant_temperature_increment(
-        brake_torque_nm=last_cycle["brake_torque_nm"], rpm=rpm, current_clt=current_clt
+        brake_torque_nm, rpm=rpm, current_clt=current_clt
     )
     cooling = calc_thermostat_cooling_rate(current_clt)
     return np.clip(current_clt + dT - cooling, -10, 115)
 
 
-def update_knock(last_cycle, clt):
-    peak_bar = last_cycle["peak_pressure_bar"]
-    if peak_bar > 65 and clt < 95:
-        return min(100.0, (peak_bar - 60) ** 2.5)
-    return 0.0
+# def update_knock(last_cycle, clt):
+#     peak_bar = last_cycle["peak_pressure_bar"]
+#     if peak_bar > 65 and clt < 95:
+#         return min(100.0, (peak_bar - 60) ** 2.5)
+#     return 0.0
 
 def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
     """
@@ -760,6 +941,12 @@ def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):
     delta_theta = theta - theta_start
     
     if delta_theta < 0 or delta_theta > duration:
+        # # Add this inside the active burn window logic
+        # if total_heat_J > 0:
+        #     print(f"DEBUG_BURN | θ:{theta:05.1f} | "
+        #         f"Burn_Progress:{y:4.2f} | "
+        #         f"dQ_this_deg:{delta_theta * c.THETA_DELTA:6.2f}J | "
+        #         f"Total_Expected:{total_heat_J:6.2f}J")
         return 0.0
     
     # Normalized position
@@ -774,3 +961,73 @@ def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):
     dxb_dtheta = term1 * term2 * term3
     
     return dxb_dtheta * total_heat_J
+
+
+def update_cylinder_wall_temperature(
+    current_clt_C, 
+    cycle_Q_loss_joules, 
+    rpm
+):
+    """
+    Determines T_wall based on the coolant temp and the heat flux.
+    R_wall represents the thermal resistance of the cylinder sleeve.
+    """
+
+    cycle_time_sec = cycle_time = 120.0 / rpm  # Time for 2 revolutions in seconds
+    # Thermal resistance of the cast iron/aluminum sleeve (K/Watt)
+    # A value of 0.05 - 0.15 is realistic for a 2.1L WBX
+    R_wall = 0.12 
+    
+    # Calculate heat flux in Watts (Joules per second)
+    heat_flux_watts = cycle_Q_loss_joules / cycle_time_sec
+    
+    # T_wall = T_coolant + (Heat_Flux * Resistance)
+    # This ensures T_wall is always higher than CLT when the engine is working
+    new_T_wall = (current_clt_C + 273.15) + (heat_flux_watts * R_wall)
+    
+    return new_T_wall
+
+def get_burn_duration(rpm, lambda_):
+    # For a WBX 2.1 (Large bore, relatively slow flame path)
+    BASE_DURATION = 45.0  # Degrees at 3000 RPM
+    REF_RPM = 3000.0
+
+    # 1. RPM Factor: Lower RPM should result in fewer degrees.
+    # At 250 RPM, f_rpm will be approx (250/3000)**0.15 = 0.68
+    f_rpm = (rpm / REF_RPM)**0.15 
+
+    # 2. Lambda Factor: Stays the same, very sensitive to lean mixtures
+    f_lambda = 1.0 + 1.5 * (lambda_ - 0.9)**2.0
+
+    # 3. Dynamic Clipping: Allow it to be much faster at cranking speeds
+    # A 25-30 degree burn at cranking is more realistic for a "catch"
+    burn_duration = max(25.0, min(80.0, BASE_DURATION * f_rpm * f_lambda))
+    
+    return burn_duration
+
+def update_intake_manifold_pressure(effective_tps, rpm):
+    """
+    effective_tps: TPS + Idle Valve (0 to 100)
+    rpm: Current engine speed
+    """
+    # 1. Convert TPS to a physical area ratio
+    # 0.02 is the "minimum leak" (throttle plate gap)
+    # 1.0 is the full bore area
+    area_ratio = np.clip(effective_tps / 100.0, 0.0, 1.0)
+    effective_area = 0.02 + (0.98 * area_ratio)
+    
+    # 2. Suction Factor (The Engine as a Pump)
+    # As RPM increases, the engine pulls more volume per second.
+    # 6000 is a scaling constant representing the flow capacity of the head.
+    suction_demand = rpm / 6000.0 
+    
+    # 3. The Pressure Result
+    # Pressure is the balance between flow IN (area) and flow OUT (suction)
+    # 0.2 is a tuning constant for the 'strength' of the vacuum.
+    map_ratio = effective_area / (effective_area + suction_demand * 0.25)
+    
+    # Scale to Atmospheric Pressure (e.g., 101325 Pa)
+    # clip ensures we stay between high vacuum (0.25 bar) and WOT (1.0 bar)
+    map_pa = c.P_ATM_PA * np.clip(map_ratio, 0.25, 1.0)
+    
+    return map_pa
