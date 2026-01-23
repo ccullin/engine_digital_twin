@@ -18,12 +18,6 @@ import sys
 if TYPE_CHECKING:
     from engine_model import Valve
 
-# --- Utility Functions ---
-
-# Removed 'dif_list' as it was unused and its implementation for calculating derivatives (dX/dtheta)
-# was non-standard. Derivatives for simulation should be calculated using difference steps
-# (e.g., dP/dtheta * theta_delta).
-
 
 def eng_speed_rad(rpm):
     """Converts RPM (Revolutions Per Minute) to angular speed in radians per second."""
@@ -77,37 +71,6 @@ def calc_wiebe_fraction(theta, theta_start, duration, a_vibe=6.908, m_vibe=2.0):
     # The standard Wiebe cumulative S-curve formula
     return 1.0 - np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
 
-""" this version is not sub-step friendly, so changed approach to fraction """
-# def calc_vibe_heat_release(
-#     rpm, lambda_, theta, Q_total, theta_start, duration_ref, a_vibe=6.908, m_vibe=2.0
-# ):
-#     """
-#     Dynamic Wiebe function with RPM and lambda-sensitive burn duration.
-#     This is the REAL fix that makes cold-start at 250 RPM actually ignite.
-#     """
-
-#     # DO NOT let burn be too slow at low RPM → this is what was killing cold start
-#     rpm_factor = max(rpm / 1000.0, 0.25)  # Never go below 0.25 (250 RPM → 0.25)
-#     lambda_factor = max(lambda_, 0.8) ** 0.3  # Rich = faster burn
-
-#     # Dynamic combustion duration in crank degrees
-#     # 40° at 6000 RPM → ~100° at 250 RPM → perfect cold-start ignition
-#     duration = max(25.0, 38.0 * (rpm_factor**-0.82) * (lambda_factor**-0.6))  # min 25°
-
-#     delta_theta = theta - theta_start
-#     if delta_theta <= 0:
-#         return 0.0
-
-#     x = 1.0 - np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
-#     dq_dtheta = (
-#         a_vibe
-#         * (m_vibe + 1)
-#         / duration
-#         * (delta_theta / duration) ** m_vibe
-#         * np.exp(-a_vibe * (delta_theta / duration) ** (m_vibe + 1))
-#     )
-
-#     return dq_dtheta * Q_total
 
 def calc_woschni_heat_loss(theta, rpm, P_curr, T_curr, V_curr, T_wall, V_clearance, theta_delta):
     """
@@ -397,11 +360,6 @@ def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl, P_
         pr_eff = min(pr, 0.9999)
         mdot = (Cd * A_valve * P_up * np.sqrt(2 * gamma / (R_up * T_up * (gamma - 1)) * (pr_eff**(2/gamma) - pr_eff**((gamma+1)/gamma))))
 
-    # Damping for stability near zero pressure delta
-    # damping = 1.0
-    # if pr > 0.98:
-    #     damping = max(0.0, (1.0 - pr) / (1.0 - 0.98))
-    
     return mdot * direction, Cd
 
 def _calc_physics_Cd(lift, diameter):
@@ -657,85 +615,8 @@ def integrate_first_law(
     M_next = M_curr + Delta_M
     V_next = V_curr + dV_d_theta * theta_delta
     T_next = (P_next * V_next) / (M_next * R_spec)
-
-    # # --- DEBUG SECTION ---
-    # # We only care about steps where mass is actually moving
-    # is_danger_zone = (CAD >= 680) or (CAD <= 40) or (180 <= CAD <= 240)
-    # if is_danger_zone:
-    #     print(
-    #         f"DEBUG_cycle {cycle}/{CAD}/{substep}  "
-    #         f"P_curr:{P_curr:6.0f}->{P_next:6.0f} T_curr:{T_curr:3.0f}->{T_next:3.0f} V_curr:{V_curr:9.2e}->{V_next:9.2e}" 
-    #         f"Delta_M:{Delta_M:9.2e} dM_d_theta:{dM_d_theta:9.2e} " 
-    #     )
-    #     print(
-    #         f"            term_heat:{term_heat:6.3f} term_work:{term_work:6.3f} term_mass:{term_mass:6.3f} "
-    #     )
-    # else:
-    #     # Print every 20 degrees elsewhere just to monitor progress
-    #     if CAD % 20 == 0 and substep == 0:
-    #         print(f"DEBUG_STABLE | θ:{cycle}/{CAD} | P:{P_curr:.0f} | T:{T_curr:.1f}")
-    
-    
-    
-    # We only care about steps where mass is actually moving
-    # if CAD > 710 or CAD < 230:
-    #     if CAD == 710 or CAD == 719 or CAD % 10 == 0 or CAD == 228:
-    #         if abs(Delta_M) > 1e-12:
-    #             print(f"DEBUG_FLOW | CAD:{CAD if CAD is not None else '?'}/{substep if substep is not None else '?'}")
-    #             print(f"  Direction: {'IN' if Delta_M > 0 else 'OUT'} | Delta_M: {Delta_M:8.2e}")
-    #             print(f"  Enthalpy : T_manifold:{T_manifold:.1f} | T_cyl:{T_curr:.1f} | T_USED:{T_flow_corr:.1f}")
-                
-    #             # This checks if we are accidentally cooling the engine during exhaust
-    #             if Delta_M < 0 and abs(T_flow_corr - T_curr) > 50:
-    #                 print("  !!! ALERT: Heat Trap Detected. Removing hot gas at cold temperature.")
-    # ------------------
     
     return P_next, T_next
-
-# def integrate_first_law(
-#     P_curr, T_curr, M_curr, V_curr, Delta_M, Delta_Q_in, Delta_Q_loss, 
-#     dV_d_theta, gamma, theta_delta, T_inflow, R_spec
-# ):
-#     # Prevent catastrophic states
-#     M_curr = max(M_curr, 1e-8)
-#     V_curr = max(V_curr, 1e-8)
-
-#     # Pre-compute rates
-#     dM_d_theta = Delta_M / theta_delta
-#     dQ_loss_rate = Delta_Q_loss 
-#     dQ_in_rate = Delta_Q_in / theta_delta
-    
-#     dQ_net_d_theta = dQ_in_rate - dQ_loss_rate
-
-#     # Next states
-#     M_next = max(M_curr + Delta_M, 1e-7)
-#     V_next = max(V_curr + dV_d_theta * theta_delta, 1e-8)
-
-#     # Use the pressure at the start of the step for a stable derivative
-#     term_heat = (gamma - 1.0) * dQ_net_d_theta
-#     term_work = -gamma * P_curr * dV_d_theta
-#     term_mass = gamma * R_spec * T_inflow * dM_d_theta
-  
-#     # Predictor step
-#     dP_initial = (term_heat + term_work + term_mass) / V_curr
-#     P_mid = P_curr + dP_initial * (0.5 * theta_delta)
-#     V_mid = V_curr + dV_d_theta * (0.5 * theta_delta)
-
-#     # Use P_mid and V_mid for the real derivative
-#     term_work_mid = -gamma * P_mid * dV_d_theta
-#     dP_d_theta_final = (term_heat + term_work_mid + term_mass) / V_mid
-#     P_next = P_curr + dP_d_theta_final * theta_delta
-
-
-#     # Temperature from Ideal Gas Law (The most physical way to derive T)
-#     T_next = (P_next * V_next) / (M_next * R_spec)
-
-#     # Weighted smoothing to maintain numerical stability
-#     # P_final = 0.9 * P_next + 0.1 * P_curr
-#     # T_final = 0.95 * T_next + 0.05 * T_curr
-    
-#     # return P_final, T_final, M_next
-#     return P_next, T_next
 
 
 # --- Engine Performance Functions ---
@@ -848,13 +729,6 @@ def update_coolant_temp(current_clt, brake_torque_nm, rpm):
     cooling = calc_thermostat_cooling_rate(current_clt)
     return np.clip(current_clt + dT - cooling, -10, 115)
 
-
-# def update_knock(last_cycle, clt):
-#     peak_bar = last_cycle["peak_pressure_bar"]
-#     if peak_bar > 65 and clt < 95:
-#         return min(100.0, (peak_bar - 60) ** 2.5)
-#     return 0.0
-
 def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
     """
     Refined knock detection for higher-fidelity Wiebe physics.
@@ -903,16 +777,6 @@ def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
         knock_detected = False
         knock_intensity = 0.0
         
-    # print(
-    #     "KNOCK DEBUG:  "
-    #     f"peak_bar: {peak_bar:6.1f} | "
-    #     f"clt: {clt:4.1f} | "
-    #     f"rpm: {rpm:4.0f} | "
-    #     f"spark_advance: {spark_advance:4.1f} | "
-    #     f"lambda_: {lambda_:4.2f} | "
-    #     f"knock_int: {knock_intensity:4.1f}"
-    # )
-        
     return knock_detected, knock_intensity
 
 def calc_indicated_torque_step(delta_work_J, stroke):
@@ -924,9 +788,6 @@ def calc_indicated_torque_step(delta_work_J, stroke):
     theta_delta_rad = c.THETA_DELTA * (np.pi / 180.0)
     torque_raw = delta_work_J / theta_delta_rad
 
-    # removing this in favour of physics from _update_mechanical_dynamics
-    # if stroke == "intake":
-    #     return -abs(torque_raw)
     return torque_raw
 
 def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):

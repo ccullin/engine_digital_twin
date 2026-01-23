@@ -64,16 +64,7 @@ class ECUController:
         self.fuel_cut_active = False  # Flag for Deceleration Fuel Cut-Off (DFCO)
         self.trapped_air_mass_kg = 0.0
 
-
-        # --- Fuel System Outputs ---
-        # self.fuel_mass_mg = 0.0                 # Mass of fuel required (mg)
-        # self.injector_pw_msec = 0.0      # Final command to injector (ms)
-
         self.injector_start_timing_degree = 0.0  # Store SOI angle
-
-        # other
-        # self._remaining_pw_ms = 0.0      # NEW: Internal counter for duration tracking
-        # self.injector_start_deg = 0.0    # NEW: Store SOI angle
 
         # --- Crank and Cam timing ---
         self.crank_tooth = 0
@@ -265,11 +256,6 @@ class ECUController:
         if self.cam_sync and crank_pos == 0:
             self.crank_sync = True
 
-        # if self.crank_sync and crank_pos == 0 and self.first_crank_rotation:  # then first time though and crank at theta720=0
-        #     self.last_calculated_theta = 0    # only included for clarity, it is already 0
-        #     self.calculated_theta = 0         # redundant statement but added for clarity
-        #     self.first_crank_rotation = False
-        # elif self.crank_sync:
         if self.crank_sync:
             self.last_calculated_theta = self.calculated_theta
             self.calculated_theta = (self.calculated_theta + 1) % 720.0
@@ -458,18 +444,6 @@ class ECUController:
                 self.pid_I = I
                 self.pid_D = D
 
-                # if current_theta % 20 == 0:
-                #     print(
-                #         f"    DEBUG IDLE PID. "
-                #         f"theta: {current_theta:3d} | "
-                #         f"RPM: {int(RPM):3d} | "
-                #         f"prev_rpm: {int(prev_rpm):3d} | "
-                #         f"P: {P:6.0f} | "
-                #         f"I: {I:6.0f} | "
-                #         f"D: {D:4.2e} | "
-                #         f"raw output: {raw_output:10.2f} | "
-                #         f"Idle Pos: {iacv_wot_equiv:10.2f}"
-                #     )
         else:
             # If driver is on the throttle, the IACV usually holds a 
             # "dashpot" position to prevent stalling when they lift off.
@@ -481,146 +455,9 @@ class ECUController:
         return iacv_pos  
 
     # -----------------------------------------------------------------------------------------
-    """Pre converstion to WOT scaler updates.  this worked for the IACV=TPS 1:1 mapping, but that is not real world."""
-    # def _idle_pid(self, TPS_percent, RPM, CLT_C):
-    #     current_theta = int(self.calculated_theta % 720)
-    #     idle_pos = 0.0
-    #     rpm_avg = np.mean(self.rpm_history)
-    #     prev_rpm = self.rpm_history[(current_theta - 2) % 720]
-        
-    #     self.fuel_cut_active = False
-
-    #     # Deceleration Fuel Cut-Off (DFCO) Thresholds
-    #     DFCO_ENGAGE_RPM = 3000  # RPM must be above this to engage DFCO (coasting)
-    #     # DFCO_DISENGAGE_RPM = self.idle_target_rpm + 50 # Fuel injection resumes below this to prevent stall
-    #     DFCO_DISENGAGE_RPM = 2000
-    #     # DFCO Logic: High RPM, foot off pedal
-    #     if TPS_percent < 1.0 and rpm_avg > DFCO_ENGAGE_RPM:
-    #         self.fuel_cut_active = True
-    #         # self.idle_integral = 0.0 # Reset integral term when fuel is cut
-    #         idle_pos = 0.0  # Close idle valve completely (0% WOT equivalent flow)
-            
-    #     # PID Idle Control Logic
-    #     # Only engage PID if not in DFCO and the throttle is mostly closed
-    #     elif TPS_percent < 5.0 and rpm_avg < DFCO_DISENGAGE_RPM:
-                
-    #         # ------------------------------------------------------------------
-    #         # 2. Errors
-    #         # ------------------------------------------------------------------
-    #         error_instant = self.idle_target_rpm - RPM
-    #         error_avg = self.idle_target_rpm - rpm_avg
-            
-    #         # PID gains — Re-tuned for the 0.0 to 5.0 WOT equivalent output range
-    #         # Note: Gains are significantly smaller than the old ones (which targeted the 20-68 actuator range)
-    #         # kp, ki, kd = 0.009, 0.0003, 0.0012
-    #         # kp = 0.007  # was 0.009
-    #         # ki = 0.00018  # was 0.0003 → slower integral, no windup
-    #         # kd = 0.0009  # was 0.0012 → slightly less D overshoot
-    #         kp = 0.005  # was 0.005
-    #         ki = 0.0004 # was 0.0003 → slower integral, no windup
-    #         kd = 0.0 
-    #         # PID_BACK_CALC_GAIN = 2000
-            
-    #         # ------------------------------------------------------------------
-    #         # 3. Proportional – on lightly filtered RPM
-    #         # ------------------------------------------------------------------
-    #         P = (kp * self._kp_mult) * error_instant 
-                  
-    #         # ------------------------------------------------------------------
-    #         # 4. Integral – on average rpm (aka filtered)
-    #         # ------------------------------------------------------------------
-    #         self.idle_integral += ki * error_avg
-    #         self.idle_integral = np.clip(self.idle_integral, -5.0, 5.0)  # small limits in % equiv
-    #         I = self.idle_integral
-            
-    #         # ------------------------------------------------------------------
-    #         # 5. Derivative – on instantaneous rate (proper sign & filtered)
-    #         # ------------------------------------------------------------------
-    #         rpm_rate = RPM - prev_rpm # rate of change
-    #         D = kd * rpm_rate # opposes acceleration
-       
-    #         # ------------------------------------------------------------------
-    #         # 6. Cold Base + Cranking Flare
-    #         # ------------------------------------------------------------------
-    #         self._idle_pid_base_flow = 2.8
-
-    #         # Base + cold bonus
-    #         cold_bonus = max(0.0, (70.0 - CLT_C) * 0.065)
-    #         base_pos = (self._idle_pid_base_flow + cold_bonus) * self._cold_bonus_mult
-
-    #         # --- CRANKING OVERRIDE ---
-    #         if RPM < 900:
-    #             # Force the valve open to 25-30% to provide enough air mass to "catch"
-    #             # This acts as an automatic 'high idle' during the start attempt
-    #             base_pos = max(base_pos, 100.0) 
-
-    #         # ------------------------------------------------------------------
-    #         # 7. output
-    #         # ------------------------------------------------------------------
-    #         pid_output = P + I + D
-
-    #         idle_pos = base_pos + pid_output
-    #         # Soft safety clip (wider than before if needed, but not required)
-    #         # idle_pos = np.clip(idle_pos, 0.0, 30.0)
-
-
-    #     else:
-    #         idle_pos = 0.0
-
-    #     # self.last_error_propotional = err_proportional if TPS_percent < 5.0 else 0.0
-
-    #     # if current_theta % 20 == 0:
-    #     #     print(
-    #     #         f"theta: {current_theta:3d} | "
-    #     #         f"RPM: {int(RPM):3d} | "
-    #     #         f"prev_rpm: {int(prev_rpm):3d} | "
-    #     #         f"P: {P:6.0f} | "
-    #     #         f"I: {self.pid_error_integral:6.0f} | "
-    #     #         f"D: {D:4.2e} | "
-    #     #         # f"PID output: {pid_clamped:10.2f} | "
-    #     #         f"Idle Pos: {idle_pos:10.2f}"
-    #     #     )
-        
-    #     # if current_theta % 90 == 0:
-    #     #     print(
-    #     #         f"theta: {current_theta:3d} | "
-    #     #         f"IDLE | RPM:{int(RPM):4d} avg:{int(rpm_avg):4d} | "
-    #     #         f"P:{P:+6.3f} I:{I:+6.3f} | base:{base_pos:5.2f} → pos:{idle_pos:5.2f}")
-
-
-    #     return idle_pos
-
-    # -----------------------------------------------------------------------------------------
     def _calculate_trapped_air_mass(self, MAP_kPa, T_intake_K, VE, rpm):
         air_density_kg_m3 = (MAP_kPa * 1000.0) / (c.R_SPECIFIC_AIR * T_intake_K)  # Ideal Gas Law
         theoretical_air = air_density_kg_m3 * c.V_DISPLACED
         theoretical_air_kg = theoretical_air * VE
-
-        # # model is theoretically perfect so lets make it more representative of real road cars
-        # if rpm < 3500:
-        #     # Ideal or peak VE is allowed up to this point (e.g., 90% potential)
-        #     ve_limit = 0.90
-        # elif rpm < 4500:
-        #     # Beginning of flow restriction and valve inertia issues (VE starts dropping)
-        #     # Interpolate from 90% down to 80%
-        #     ve_limit = 0.90 - (rpm - 3500) / 1000 * 0.10
-        # elif rpm < 5500:
-        #     # Severe restriction, reaching the physical redline limit (valve float)
-        #     # Interpolate from 80% down to 50%
-        #     ve_limit = 0.80 - (rpm - 4500) / 1000 * 0.30
-        # else:
-        #     # Above the redline, VE crashes due to severe valve float and lack of flow
-        #     ve_limit = 0.50 - (rpm - 5500) / 2000 * 0.20  # Drops further at high RPM
-        #     ve_limit = max(ve_limit, 0.30)  # Maintain a floor
-
-        # theoretical_air_kg = theoretical_air_kg * ve_limit
-
-        # print(
-        #     f"MAP={MAP_kPa*1000} | "
-        #     f"T_intake_K={T_intake_K} | "
-        #     f"air density={air_density_kg_m3}m3 | "
-        #     f"m air={theoretical_air_kg}kg | "
-        #     f"VE={VE} | "
-        #     )
 
         return theoretical_air_kg
