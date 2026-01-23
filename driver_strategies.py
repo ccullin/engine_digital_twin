@@ -8,6 +8,7 @@ import constants as c
 from engine_model import FixedKeyDictionary
 import numpy as np
 import matplotlib.pyplot as plt
+from collections import deque
 
 
 # =============================================================================
@@ -55,42 +56,69 @@ class IdleStrategy(BaseStrategy):
         return tps, load, pressure
 
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
-        ax_top, ax_topright, _, _ = dashboard_manager.get_strategy_axes()
+        ax_top, ax_topright, ax_bottomleft, ax_bottomright = dashboard_manager.get_strategy_axes()
         if ax_top is None or ax_topright is None or data is None:
             return
+        
+        plot1 = ax_top
+        plot2 = ax_topright
+        plot3 = ax_bottomleft
+        plot4 = ax_bottomright
 
         sensors, engine_data, ecu_outputs = data
 
         if not hasattr(self, 'artists_created'):
-            # --- Top Plot: PID Response (RPM vs Target & Valve %) ---
-            ax_top.clear()
-            ax_top.set_title("Idle PID Response")
-            ax_top.set_xlabel("Crank Angle (deg)")
-            ax_top.set_ylabel("RPM", color='blue')
-            ax_top.grid(True, alpha=0.3)
+            # --- PLOT 1: PID Response (RPM vs Target & Valve %) ---
+            plot1.clear()
+            plot1.set_title("Idle PID Response")
+            plot1.set_xlabel("Crank Angle (deg)")
+            plot1.set_ylabel("RPM", color='blue')
+            plot1.grid(True, alpha=0.3)
             
-            self.rpm_line, = ax_top.plot([], [], color='blue', label='Actual RPM')
-            self.target_line, = ax_top.plot([], [], color='cyan', linestyle='--', label='Target')
+            self.rpm_line, = plot1.plot([], [], color='blue', label='Actual RPM')
+            self.target_line, = plot1.plot([], [], color='cyan', linestyle='--', label='Target')
             
             # Secondary axis for Valve Duty Cycle
-            self.ax_valve = ax_top.twinx()
+            self.ax_valve = plot1.twinx()
             self.ax_valve.set_ylabel("IACV Opening %", color='red')
             self.valve_line, = self.ax_valve.plot([], [], color='red', alpha=0.6, label='Valve %')
             
-            # --- Bottom Plot: PID Component Split ---
-            ax_topright.clear()
-            ax_topright.set_title("PID Component Contribution")
-            ax_topright.set_xlabel("Crank Angle (deg)")
-            ax_topright.set_ylabel("Output Contribution")
-            ax_topright.grid(True, alpha=0.3)
+            # --- PLOT 2: PID Component Split ---
+            plot2.clear()
+            plot2.set_title("PID Component Contribution")
+            plot2.set_xlabel("Crank Angle (deg)")
+            plot2.set_ylabel("Output Contribution")
+            plot2.grid(True, alpha=0.3)
 
-            self.p_trace, = ax_topright.plot([], [], color='orange', label='P (Prop)')
-            self.i_trace, = ax_topright.plot([], [], color='purple', label='I (Integ)')
-            self.d_trace, = ax_topright.plot([], [], color='brown', label='D (Deriv)')
-            ax_topright.axhline(0, color='gray', linestyle='--', alpha=0.5)
-            ax_topright.legend(loc='upper right', fontsize='xx-small')
+            self.p_trace, = plot2.plot([], [], color='orange', label='P (Prop)')
+            self.i_trace, = plot2.plot([], [], color='purple', label='I (Integ)')
+            self.d_trace, = plot2.plot([], [], color='brown', label='D (Deriv)')
+            plot2.axhline(0, color='gray', linestyle='--', alpha=0.5)
+            plot2.legend(loc='upper right', fontsize='xx-small')
+            
+            # --- PLOT 3: COMBUSTION STABILITY
+            plot3.clear()
+            plot3.set_title("Combustion Stability (Last 20 Cycles)")
+            plot3.set_xlabel("Cycle Number")
+            plot3.set_ylabel("AFR", color='lime')
+            self.afr_line, = plot3.plot([], [], color='lime', label='AFR')
+            
+            self.ax_spark = plot3.twinx()
+            self.ax_spark.set_ylabel("Spark Advance (°BTDC)", color='blue')
+            self.spark_line, = self.ax_spark.plot([], [], color='blue', label='Spark')
+            
+            # --- PLOT 4: IACV Trend ---
+            plot4.clear()
+            plot4.set_title("IACV Authority Trend")
+            plot4.set_xlabel("Cycle Number")
+            plot4.set_ylabel("Valve %", color='red')
+            self.valve_trend_line, = plot4.plot([], [], color='red', linewidth=2)
+            plot4.set_ylim(0, 100)
+        
             
             self.artists_created = True
+            
+            
 
         # === DATA PROCESSING ===
         log_cad = engine_data.get('theta_list')
@@ -101,7 +129,7 @@ class IdleStrategy(BaseStrategy):
         p_val = ecu_outputs['pid_P']
         i_val = ecu_outputs['pid_I']
         d_val = ecu_outputs['pid_D']
-        valve_pct = ecu_outputs['idle_valve_position']
+        valve_pct = ecu_outputs['iacv_pos']
         target_rpm = ecu_outputs['target_rpm']
 
         # --- 1. Update RPM Trace (Top) ---
@@ -109,8 +137,8 @@ class IdleStrategy(BaseStrategy):
         self.target_line.set_data([0, 720], [target_rpm, target_rpm])
         self.valve_line.set_data(log_cad, np.full_like(log_cad, valve_pct))
         
-        ax_top.set_xlim(0, 720)
-        ax_top.set_ylim(0, max(2000, np.max(rpm_history) * 1.2))
+        plot1.set_xlim(0, 720)
+        plot1.set_ylim(0, max(2000, np.max(rpm_history) * 1.2))
         self.ax_valve.set_ylim(0, 100)
 
         # --- 2. Update PID Components (Bottom) ---
@@ -119,8 +147,36 @@ class IdleStrategy(BaseStrategy):
         self.i_trace.set_data(log_cad, np.full_like(log_cad, i_val))
         self.d_trace.set_data(log_cad, np.full_like(log_cad, d_val))
         
-        ax_topright.set_xlim(0, 720)
-        ax_topright.set_ylim(-50, 100) # Range for PID terms
+        plot2.set_xlim(0, 720)
+        plot2.set_ylim(-50, 100) # Range for PID terms
+        
+        
+        # --- DATA FOR COMBUSTION STABILITY AND IDLE VALVE. 
+        if not hasattr(self, 'cycle_history'):
+            self.max_cycles = 100
+            self.cycle_history = deque(maxlen=self.max_cycles)
+            self.afr_history = deque(maxlen=self.max_cycles)
+            self.spark_history = deque(maxlen=self.max_cycles)
+            self.valve_history = deque(maxlen=self.max_cycles)
+        
+        self.cycle_history.append(current_cycle)
+        self.afr_history.append(sensors.afr)
+        self.spark_history.append(ecu_outputs['spark_timing'])
+        self.valve_history.append(ecu_outputs['iacv_pos'])
+        
+        # Update AFR vs Spark Plot
+        self.afr_line.set_data(self.cycle_history, self.afr_history)
+        self.spark_line.set_data(self.cycle_history, self.spark_history)
+        
+        plot3.set_xlim(min(self.cycle_history), max(self.cycle_history))
+        plot3.set_ylim(min(self.afr_history)-1, max(self.afr_history)+1)
+        self.ax_spark.set_ylim(min(self.spark_history)-5, max(self.spark_history)+5)
+
+        # Update IACV Trend Plot
+        self.valve_trend_line.set_data(self.cycle_history, self.valve_history)
+        plot4.set_xlim(min(self.cycle_history), max(self.cycle_history))
+        # Keep y-limit steady at 0-100 to visualize how close to the floor it is
+        
 
         # === IDLE DEBUG TELEMETRY (Left Table) ===
         # Calculate actual AFR error
@@ -136,8 +192,8 @@ class IdleStrategy(BaseStrategy):
             f"AFR TARGET:     {target_afr:8.2f}",
             f"AFR ERROR:      {afr_error:+8.2f}",
             "----------------------------",
-            f"IACV POSITION:  {valve_pct:8.1f} %",
-            f"WOT EQUIV:      {ecu_outputs['idle_pos_wot']:8.4f}",
+            f"IACV POSITION:  {valve_pct:8.2f} %",
+            f"WOT EQUIV:      {ecu_outputs['iacv_wot_equiv']:8.2f} %",
             f"IGNITION ADV:   {ecu_outputs['spark_timing']:8.1f} °",
             "",
             "ENERGY AUDIT (Joules):",
@@ -174,7 +230,7 @@ class WotStrategy(BaseStrategy):
         return tps, load, pressure
     
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
-        ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = dashboard_manager.get_strategy_axes()
+        plot1left, ax_topright, ax_bottomleft, ax_bottomright = dashboard_manager.get_strategy_axes()
         if any(v is None for v in (ax_topleft, ax_topright, ax_bottomleft, ax_bottomright, data)):
             return
         
@@ -246,7 +302,7 @@ class MotoringStrategy(BaseStrategy):
         self.motoring_enabled = True
         
     def driver_update(self, driver):
-        tps = 100.0
+        tps = 100
         load = 0.0
         pressure = c.P_ATM_PA
         return tps, load, pressure
@@ -275,7 +331,7 @@ class MotoringStrategy(BaseStrategy):
 
             self.intake_line, = plot1.plot([], [], color='cyan', linewidth=2, label='Intake')
             self.comp_line,   = plot1.plot([], [], color='green', linewidth=2, label='Compression')
-            self.power_line,  = plot1.plot([], [], color='red', linewidth=2, label='Expansion')
+            self.power_line,  = plot1.plot([], [], color='red', linewidth=2, label='Expansion', ls='dashed')
             self.exh_line,    = plot1.plot([], [], color='orange', linewidth=2, label='Exhaust')
             plot1.legend(loc='upper right', fontsize='x-small')
 

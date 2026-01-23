@@ -6,6 +6,134 @@ import constants as c
 from engine_model import EngineModel
 
 
+
+def run_mass_flow_audit(rpm, tps_percent):
+    """
+    Diagnostic to catch 'leaky' throttle math.
+    Compiles mass inflow vs cylinder demand to see why P_cyl doesn't drop.
+    """
+    engine = EngineModel(rpm=rpm)
+    ecu = get_default_ecu_outputs()
+    engine.sensors.TPS_percent = tps_percent
+    
+    # We need to simulate a few cycles to stabilize the manifold pressure logic
+    # from physics_functions.update_intake_manifold_pressure
+    for _ in range(720 * 3):
+        engine.step(ecu)
+
+    print("="*95)
+    print(f"MASS FLOW AUDIT | RPM: {rpm} | TPS: {tps_percent}% | MAP: {engine.sensors.MAP_kPa:.2f} kPa")
+    print("="*95)
+    print(f"{'CAD':>5} | {'V (L)':>8} | {'P_cyl(bar)':>10} | {'dm_in(mg)':>10} | {'Flow(g/s)':>10} | {'Status'}")
+    print("-" * 95)
+
+    total_mass_in = 0.0
+    for cad in range(0, 360): # Focus on Intake and start of Compression
+        engine.state.current_theta = cad
+        
+        # 1. Capture the flow deltas before the step
+        # This uses your engine_model.py _calc_flow_deltas logic
+        deltas = engine._calc_flow_deltas(ecu, 1.0)
+        dm_mg = deltas['dm_i'] * 1e6
+        total_mass_in += dm_mg
+        
+        # 2. Step the engine
+        engine.step(ecu)
+        p_bar = engine.cyl.P / 1e5
+        vol_l = engine.cyl.V_list[cad] * 1000
+        
+        # 3. Calculate flow rate in g/s for physical comparison
+        # (dm_kg / degree) * (degrees / second) * 1000
+        deg_per_sec = rpm * 6.0
+        flow_rate_gs = deltas['dm_i'] * deg_per_sec * 1000
+
+        if cad % 20 == 0 or (160 <= cad <= 220): # Higher res near IVC
+            status = "Filling" if dm_mg > 0 else "Backflow"
+            print(f"{cad:5d} | {vol_l:8.3f} | {p_bar:10.3f} | {dm_mg:10.4f} | {flow_rate_gs:10.2f} | {status}")
+
+    print("-" * 95)
+    print(f"Total Trapped Mass: {total_mass_in:.2f} mg")
+    print(f"Ideal Mass @ MAP:   {(engine.sensors.P_manifold_Pa * engine.cyl.V_displaced)/(287*293)*1e6:.2f} mg")
+    print("="*95)
+
+def run_high_vacuum_drag_audit(rpm, map_pa):
+    """
+    Audit to see why 151J of combustion is winning against friction/pumping.
+    """
+    engine = EngineModel(rpm=rpm)
+    engine.sensors.P_manifold_Pa = map_pa
+    
+    total_fric_work = 0.0
+    total_pumping_work = 0.0
+    
+    print("="*85)
+    print(f"HIGH-VACUUM DRAG AUDIT | RPM: {rpm} | MAP: {map_pa/1000:.1f} kPa")
+    print("="*85)
+
+    for cad in range(720):
+        # 1. Friction Torque from your function
+        p_cyl = engine.cyl.log_P[cad]
+        t_fric = pf.calc_single_cylinder_friction(cad, rpm, p_cyl, 90.0)
+        total_fric_work += t_fric * (np.pi / 180.0)
+        
+        # 2. Pumping Work (P * dV)
+        # This is the 'Brake' provided by the closed throttle
+        dv = engine.cyl.dV_list[cad]
+        total_pumping_work += p_cyl * dv
+
+    print(f"Expansion Work (from log):  +151.0 J")
+    print(f"Friction Loss (Calc):       {total_fric_work * -4:>8.2f} J") # 4 cylinders
+    print(f"Pumping Loss (Calc):        {total_pumping_work:>8.2f} J")
+    print(f"NET BALANCE:               {151.0 - (total_fric_work*4) + total_pumping_work:>8.2f} J")
+    
+    if (151.0 - (total_fric_work*4) + total_pumping_work) > 0:
+        print("\nRESULT: Engine ACCELERATES. Physics are too 'slippery'.")
+    else:
+        print("\nRESULT: Engine DECELERATES. Physics are healthy.")
+
+
+def run_idle_braking_audit(rpm, vacuum_pa):
+    """
+    Audit the 'Braking' forces at idle.
+    A healthy 2.1L engine should lose ~100-150J per cycle to pumping/friction.
+    """
+    engine = EngineModel(rpm=rpm)
+    # Force the manifold to a deep vacuum
+    engine.sensors.P_manifold_Pa = vacuum_pa 
+    
+    work_pumping = 0.0
+    work_friction = 0.0
+    
+    print("="*75)
+    print(f"IDLE BRAKING AUDIT | RPM: {rpm} | MAP: {vacuum_pa/1000:.1f} kPa")
+    print("="*75)
+    
+    for cad in range(720):
+        # Calculate Pumping Work: W = P * dV
+        # dV is in m^3, P is in Pa. Result is Joules.
+        p_cyl = engine.cyl.log_P[cad]
+        dv = engine.cyl.dV_list[cad]
+        step_work = p_cyl * dv
+        work_pumping += step_work
+        
+        # Calculate Friction Work
+        f_torque = pf.calc_single_cylinder_friction(cad, rpm, p_cyl, 90.0)
+        work_friction += f_torque * (np.pi / 180.0)
+
+    print(f"1. Pumping Work (Net):  {work_pumping:>8.2f} J (Should be negative)")
+    print(f"2. Friction Work:       {work_friction:>8.2f} J (Braking force)")
+    print(f"3. TOTAL DRAG:          {work_pumping - work_friction:>8.2f} J")
+    print("-" * 75)
+    
+    # Logic Check
+    # Your log showed 151J of Expansion work.
+    # Total Drag MUST be > 151J to slow down the engine.
+    if (work_pumping - work_friction) + 151.0 > 0:
+        print("VERDICT: PHYSICS GAP FOUND.")
+        print("Drag is too weak to stop combustion torque. Increase Friction or Pumping.")
+
+
+
 def run_combustion_efficiency_audit(rpm):
     """
     Diagnose power production by integrating the actual ECU logic.
@@ -249,13 +377,7 @@ def run_true_physics_test(rpm):
     # print("="*75)
     
 
-def get_default_ecu_outputs():
-    """Standard ECU state for motoring diagnostics."""
-    return {
-        "spark": False, "spark_timing": 0.0, "afr_target": 14.7,
-        "idle_valve_position": 0.0, "trapped_air_mass_kg": 0.0,
-        "ve_fraction": 0.0, "injector_on": False, "fuel_cut_active": False,
-    }
+
 
 def run_intake_test(rpm, vacuum_bar):
     """Diagnose if the intake valve can physically fill the cylinder volume."""
@@ -401,13 +523,23 @@ def run_backflow_test(rpm):
     print("  The dashboard shows 0.46 because it is likely a static ECU lookup table.")
     print("  To sync them, the ECU table must be 'tuned' to match these physical results.")
     print("="*75)
+    
+    
+def get_default_ecu_outputs():
+    """Standard ECU state for motoring diagnostics."""
+    return {
+        "spark": False, "spark_timing": 0.0, "afr_target": 14.7,
+        "iacv_pos": 0.0, "iacv_wot_equiv": 0.00, "trapped_air_mass_kg": 0.0,
+        "ve_fraction": 0.0, "injector_on": False, "fuel_cut_active": False,
+    }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--test", choices=["intake", "friction", "backflow", "pv", "gas_audit", "combustion"], required=True)
+    parser.add_argument("--test", choices=["intake", "friction", "backflow", "pv", "gas_audit", "combustion", "idle_brake", "drag_audit", "flow_audit"], required=True)
     parser.add_argument("--rpm", type=int, default=3000)
     parser.add_argument("--vacuum", type=float, default=0.25)
     parser.add_argument("--range", type=int, nargs=2, default=[500, 6000])
+    parser.add_argument("--tps", type=float, default=0.0)
     
     args = parser.parse_args()
 
@@ -417,4 +549,8 @@ if __name__ == "__main__":
     elif args.test == "pv": run_pv_work_analysis(args.rpm)
     elif args.test == "gas_audit": run_gas_exchange_audit(args.rpm)
     elif args.test == "combustion": run_combustion_efficiency_audit(args.rpm)
+    elif args.test == "idle_brake": run_idle_braking_audit(args.rpm, args.vacuum * 1e5) # Convert bar to Pa
+    elif args.test == "drag_audit": run_high_vacuum_drag_audit(args.rpm, args.vacuum * 1e5)
+    elif args.test == "flow_audit": run_mass_flow_audit(args.rpm, args.tps)
+
     

@@ -966,26 +966,31 @@ def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):
 def update_cylinder_wall_temperature(
     current_clt_C, 
     cycle_Q_loss_joules, 
-    rpm
+    rpm,
+    previous_T_wall
 ):
     """
-    Determines T_wall based on the coolant temp and the heat flux.
-    R_wall represents the thermal resistance of the cylinder sleeve.
+    Determines T_wall with thermal inertia to prevent unrealistic spikes.
     """
+    if rpm < 100:
+        return current_clt_C + 273.15
 
-    cycle_time_sec = cycle_time = 120.0 / rpm  # Time for 2 revolutions in seconds
-    # Thermal resistance of the cast iron/aluminum sleeve (K/Watt)
-    # A value of 0.05 - 0.15 is realistic for a 2.1L WBX
-    R_wall = 0.12 
-    
-    # Calculate heat flux in Watts (Joules per second)
+    cycle_time_sec = 120.0 / rpm
     heat_flux_watts = cycle_Q_loss_joules / cycle_time_sec
     
-    # T_wall = T_coolant + (Heat_Flux * Resistance)
-    # This ensures T_wall is always higher than CLT when the engine is working
-    new_T_wall = (current_clt_C + 273.15) + (heat_flux_watts * R_wall)
+    # R_wall should be tuned. 0.002 is a better starting point for Watts.
+    R_wall = 0.002 
     
-    return new_T_wall
+    # The 'steady state' wall temp for this specific power level
+    target_T_wall = (current_clt_C + 273.15) + (heat_flux_watts * R_wall)
+    
+    # Thermal Inertia: Alpha represents how much the wall can change per cycle.
+    # 0.01 means it takes ~100 cycles to reach 63% of a temp change.
+    alpha = 0.05 
+    new_T_wall = (alpha * target_T_wall) + ((1 - alpha) * previous_T_wall)
+    
+    # Safety clamp: Wall can't be cooler than coolant or hotter than melting point
+    return np.clip(new_T_wall, current_clt_C + 273.15, 600.0)
 
 def get_burn_duration(rpm, lambda_):
     # For a WBX 2.1 (Large bore, relatively slow flame path)
@@ -1007,27 +1012,21 @@ def get_burn_duration(rpm, lambda_):
 
 def update_intake_manifold_pressure(effective_tps, rpm):
     """
-    effective_tps: TPS + Idle Valve (0 to 100)
-    rpm: Current engine speed
+    effective_tps: The sum of TPS + IACV (0 to 100)
     """
-    # 1. Convert TPS to a physical area ratio
-    # 0.02 is the "minimum leak" (throttle plate gap)
-    # 1.0 is the full bore area
-    area_ratio = np.clip(effective_tps / 100.0, 0.0, 1.0)
-    effective_area = 0.02 + (0.98 * area_ratio)
+    # Simply convert the 0-100 command to a 0.0-1.0 fraction
+    tps_fraction = effective_tps / 100.0
     
-    # 2. Suction Factor (The Engine as a Pump)
-    # As RPM increases, the engine pulls more volume per second.
-    # 6000 is a scaling constant representing the flow capacity of the head.
-    suction_demand = rpm / 6000.0 
+    # Engine suction scales with RPM
+    # We use a non-linear suction factor to model efficiency drop at high RPM
+    suction_demand = (rpm / 6000.0) * np.clip(rpm / 5000.0, 0.25, 0.4)
     
-    # 3. The Pressure Result
-    # Pressure is the balance between flow IN (area) and flow OUT (suction)
-    # 0.2 is a tuning constant for the 'strength' of the vacuum.
-    map_ratio = effective_area / (effective_area + suction_demand * 0.25)
+    # If the ECU closes both valves (0.0), the MAP should drop to the floor
+    if tps_fraction <= 0:
+        return c.P_ATM_PA * 0.15 
+        
+    # Pressure is the balance of Inflow (fraction) vs Outflow (suction)
+    map_ratio = tps_fraction / (tps_fraction + suction_demand)
     
-    # Scale to Atmospheric Pressure (e.g., 101325 Pa)
-    # clip ensures we stay between high vacuum (0.25 bar) and WOT (1.0 bar)
-    map_pa = c.P_ATM_PA * np.clip(map_ratio, 0.25, 1.0)
-    
-    return map_pa
+    # Return pressure in Pascals, clipped to realistic vacuum limits
+    return c.P_ATM_PA * np.clip(map_ratio, 0.08, 1.0)

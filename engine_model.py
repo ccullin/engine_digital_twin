@@ -464,9 +464,7 @@ class EngineModel:
                 V_clearance = self.cyl.V_clearance,
                 theta_delta=substep_size
             )
-            # self.cyl.Q_loss_total += Q_loss_sub # track total per cyl for cyl wall T update at end of cycle.
-            """ DEBUG TEST """
-            # Q_loss_sub = 0
+            self.cyl.Q_loss_total += Q_loss_sub # track total per cyl for cyl wall T update at end of cycle.
 
             # 3. Integrate First Law
             # Note: We pass the CURRENT mass here. The integrator handles dM/dtheta.
@@ -530,18 +528,30 @@ class EngineModel:
                 # Calculate the 'Energy Density' to see if the heat addition is sane
                     specific_energy_j_kg = Q_in_sub / max(self.cyl.total_mass_kg, 1e-9)
                     
-                    print(f"    DEBUG COMB | θ:{self._cycle_count}/{CAD}/{substep} | P:{P_next/1e5:4.1f}bar | T:{T_next:4.0f}K "
-                          f"T_wall:{self.cyl.T_wall:4.0f}K "
-                          f"dQ_in:{Q_in_sub:6.2f}J | dQ/m:{specific_energy_j_kg:6.0f}J/kg | gamma:{self.cyl.gamma_blend:.3f} "
-                          f"dQ_loss:{Q_loss_sub:6.2f}J "
-                        )
+                    # print(f"    DEBUG COMB | θ:{self._cycle_count}/{CAD}/{substep} | P:{P_next/1e5:4.1f}bar | T:{T_next:4.0f}K "
+                    #       f"T_wall:{self.cyl.T_wall:4.0f}K "
+                    #       f"dQ_in:{Q_in_sub:6.2f}J | dQ/m:{specific_energy_j_kg:6.0f}J/kg | gamma:{self.cyl.gamma_blend:.3f} "
+                    #       f"dQ_loss:{Q_loss_sub:6.2f}J "
+                    #     )
                     
                 # Check for "Thermal Runaway"
                 if T_next > 3500 or T_next < 200:
                     print(f"  !!! INSTABILITY DETECTED at CAD {CAD}/{substep}. 3500K < Temp:{T_next:4.0f} < 200K.   Physics breaking.")
 
+        # UPDATE INTAKE MANIFOLD PRESSURE (MAP SENSOR) 
+        # calc total throttle fraction
+        idle_valve = ecu_outputs["iacv_wot_equiv"]
+        effective_tps = np.clip(self.sensors.TPS_percent + idle_valve, 0, 100)
+        self.state.effective_tps = effective_tps
+        tps_frac = np.clip(effective_tps / 100.0, 0.0, 1.0)
         
-        # 4. Mechanical Dynamics (Calculated once per degree using final state)
+        # --- set MAP
+        map_Pa = pf.update_intake_manifold_pressure(effective_tps, self.sensors.rpm)    
+        self.sensors.P_manifold_Pa = map_Pa
+        self.state.map_history[CAD] = map_Pa
+
+        
+        #  MECHANICAL DYNAMICS (Calculated once per degree using final state)
         # We use the full degree dV here because work is summed across the step
         self._update_mechanical_dynamics(CAD, stroke, self.cyl.P, self.cyl.dV_list[CAD])
          
@@ -1210,16 +1220,16 @@ class EngineModel:
                       f"EXCESS RECOVERED - Fuel: {self.cyl.fuel_mass_kg:7.3e}kg, Air: {self.cyl.air_mass_kg:7.3e}kg")
                 
             # --- Debugging Output ---
-            # if CAD % 10 == 0:
-            #     ign_delay = int(self.cyl.ignition_start_theta - self.cyl.spark_event_theta)
-            #     print(
-            #         f"    DEBUG COMBUSTION: {self._cycle_count}/{CAD}/{substep}  "
-            #         f"rpm:{self.sensors.rpm:4.0f} "
-            #         f"dQ:{dQ_combustion:6.4f} heat_released:{self.cyl.cumulative_heat_released:7.1f} "
-            #         f"air_remaining:{self.cyl.air_mass_kg:9.2e} fuel_remaining:{self.cyl.fuel_mass_kg:9.2e} "
-            #         f"ign_delay:{ign_delay} duration: {CAD - int(self.cyl.ignition_start_theta)} "
-            #         f"ratio:{completion_ratio:4.2f} P:{self.cyl.P/1e5:4.1f}bar "
-            #     )
+            if CAD % 10 == 0:
+                ign_delay = int(self.cyl.ignition_start_theta - self.cyl.spark_event_theta)
+                print(
+                    f"    DEBUG COMBUSTION: {self._cycle_count}/{CAD}/{substep}  "
+                    f"rpm:{self.sensors.rpm:4.0f} "
+                    f"dQ:{dQ_combustion:6.4f} heat_released:{self.cyl.cumulative_heat_released:7.1f} "
+                    f"air_remaining:{self.cyl.air_mass_kg:9.2e} fuel_remaining:{self.cyl.fuel_mass_kg:9.2e} "
+                    f"ign_delay:{ign_delay} duration: {CAD - int(self.cyl.ignition_start_theta)} "
+                    f"ratio:{completion_ratio:4.2f} P:{self.cyl.P/1e5:4.1f}bar "
+                )
 
             return dQ_combustion
         
@@ -1458,7 +1468,9 @@ class EngineModel:
             
         if CAD == self.valves.intake.open_angle: 
             print(f"  IVO θ:{CAD:3d} air_mass:{self.cyl.air_mass_kg:.2e} fuel_mass:{self.cyl.fuel_mass_kg:.2e} total_mass:{self.cyl.total_mass_kg:.2e} "
-                  f"T_cyl:{self.cyl.T:.0f}K ")
+                  f"T_cyl:{self.cyl.T:.0f}K "
+                  f"eff_TPS:{self.state.effective_tps:.0f} IACV:{ecu['iacv_wot_equiv']}"
+                  )
             self.temp_total_dm_f = 0.0
             
         elif CAD == self.valves.exhaust.open_angle: 
@@ -1520,32 +1532,16 @@ class EngineModel:
         self.cyl.T_wall = pf.update_cylinder_wall_temperature(
             self.sensors.CLT_C, 
             self.cyl.Q_loss_total, 
-            self.sensors.rpm
+            self.sensors.rpm,
+            self.cyl.T_wall
         )
         self.cyl.Q_loss_total = 0.0
         
-        # update Intake Manifold Pressure (MAP) sensor
-        # -- Combine driver TPS and ECU idle control
-        
-        # -- scale idle valve % upto WOT
-        IDLE_AIR_CAPACITY = 0.10  # 10% of total WOT airflow
-        # idle_contribution = (ecu_outputs["idle_valve_position"] / 100.0) * IDLE_AIR_CAPACITY * 100.0
-        idle_contribution = ecu_outputs["idle_valve_position"] * 100
-
-        # calc total throttle fraction
-        effective_tps = np.clip(self.sensors.TPS_percent + idle_contribution, 0, 100)
-        self.state.effective_tps = effective_tps
-        tps_frac = np.clip(effective_tps / 100.0, 0.0, 1.0)
-        
-        # --- set MAP
-        map_Pa = pf.update_intake_manifold_pressure(effective_tps, self.sensors.rpm)  
-        self.sensors.P_manifold_Pa = map_Pa
-        self.state.map_history[CAD] = map_Pa
         
         print(
             f"    DEBUG step end: CAD={self._cycle_count}/{CAD} "
             f"rpm:{self.sensors.rpm:.0f} P-peak:{peak_bar:.0f}bar P_peak_angle:{self.cyl.P_peak_angle:.0f} T_peak:{max(self.cyl.log_T):.0f}K "
-            f"T_wall:{self.cyl.T_wall:.0f}K MAP:{map_Pa:.1f}:Pa  "
+            f"T_wall:{self.cyl.T_wall:.0f}K MAP:{self.sensors.MAP_kPa:.1f}:Pa  "
         )
         
     # ----------------------------------------------------------------------
