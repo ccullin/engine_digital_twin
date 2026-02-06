@@ -5,7 +5,17 @@ import physics_functions as pf
 import constants as c
 from engine_model import EngineModel
 
-
+def run_torque_loss_audit(rpm_list=[3300, 4500]):
+    """Compare torque components at the old peak vs new behavior."""
+    ecu = get_default_ecu_outputs()
+    for rpm in rpm_list:
+        engine = EngineModel(rpm=rpm)
+        for _ in range(720):
+            sensors, engine_data = engine.step(ecu)
+        print(f"--- Analysis at {rpm} RPM ---")
+        print(f"Pumping Work: {engine_data['work_pumping_j']:.2f} J")
+        print(f"Friction Loss: {engine_data['friction_work_j']:.2f} J")
+        print(f"Net Indicated: {engine_data['net_work_j']:.2f} J")
 
 def run_mass_flow_audit(rpm, tps_percent):
     """
@@ -535,7 +545,9 @@ def get_default_ecu_outputs():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--test", choices=["intake", "friction", "backflow", "pv", "gas_audit", "combustion", "idle_brake", "drag_audit", "flow_audit"], required=True)
+    parser.add_argument("--test", choices=["intake", "friction", "backflow", "pv", "gas_audit", "combustion", 
+                                           "idle_brake", "drag_audit", "flow_audit", "torque_audit"
+                                           ], required=True)
     parser.add_argument("--rpm", type=int, default=3000)
     parser.add_argument("--vacuum", type=float, default=0.25)
     parser.add_argument("--range", type=int, nargs=2, default=[500, 6000])
@@ -552,5 +564,6 @@ if __name__ == "__main__":
     elif args.test == "idle_brake": run_idle_braking_audit(args.rpm, args.vacuum * 1e5) # Convert bar to Pa
     elif args.test == "drag_audit": run_high_vacuum_drag_audit(args.rpm, args.vacuum * 1e5)
     elif args.test == "flow_audit": run_mass_flow_audit(args.rpm, args.tps)
+    elif args.test == "torque_audit": run_torque_loss_audit()
 
     

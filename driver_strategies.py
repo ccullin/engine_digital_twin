@@ -24,28 +24,20 @@ class BaseStrategy:
         load = 0.0
         pressure = c.P_ATM_PA
         return tps, load, pressure
-
-    
+ 
     def get_telemetry(self):
         """Return dict of extra keys for dashboard"""
         return {}
     
-    # def plot_strategy_panel(self, dashboard_manager):
-    #     ax, ax_bottom = dashboard_manager.get_strategy_axes()
-    #     if ax is None:
-    #         return
-    #     ax.set_title(f"{self.__class__.__name__} Mode")
-    #     ax.text(0.5, 0.5, "No custom visualization\n(Base telemetry active)", 
-    #             ha='center', va='center', transform=ax.transAxes, fontsize=16)
-    #     ax.axis('off')
-
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
         """Called every cycle — delegate to manager for shared realtime loop"""
         pass  # default: nothing
 
 
 class IdleStrategy(BaseStrategy):
-    """ Engine start from cranking RPM to idle RPM """
+    """
+    Engine start from cranking RPM to idle RPM
+    """
     def __init__(self):
         self.start_rpm = 250
     
@@ -219,7 +211,9 @@ class IdleStrategy(BaseStrategy):
 
 
 class WotStrategy(BaseStrategy):
-    """ Engine start from cranking RPM to idle RPM """
+    """
+    Engine start from cranking RPM to idle RPM
+    """
     def __init__(self):
         self.start_rpm = 900
     
@@ -230,48 +224,102 @@ class WotStrategy(BaseStrategy):
         return tps, load, pressure
     
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
-        plot1left, ax_topright, ax_bottomleft, ax_bottomright = dashboard_manager.get_strategy_axes()
-        if any(v is None for v in (ax_topleft, ax_topright, ax_bottomleft, ax_bottomright, data)):
+        axes = dashboard_manager.get_strategy_axes()
+        if axes is None or data is None:
             return
         
+        ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = axes
+        
+        plot1 = ax_topleft
+        plot2 = ax_bottomleft
+        plot3 = ax_topright
+        plot4 = ax_bottomright
+
         sensors, engine_data, ecu_outputs = data
+        
         theta_vec = engine_data.get('theta_list')
         p_bar = engine_data['log_P'] / 1e5
         v_liters = engine_data['log_V'] * 1000.0
+        
+        if not hasattr(self, 'artists_created'):
+            # --- 1. Top Left: P-V Loop (High Pressure Scale) ---
+            plot1.clear()
+            plot1.set_title("Fired P-V Loop (WOT)")
+            # plot1.plot(v_liters, p_bar, color='red', linewidth=2)
+            plot1.set_ylabel("Pressure (Bar)")
+            plot1.set_ylim(-1, 60) # Scaled for combustion
+            plot1.grid(True, alpha=0.3)
+            
+            self.intake_line, = plot1.plot([], [], color='cyan', linewidth=2, label='Intake')
+            self.comp_line,   = plot1.plot([], [], color='green', linewidth=2, label='Compression')
+            self.power_line,  = plot1.plot([], [], color='red', linewidth=2, label='Expansion', ls='dashed')
+            self.exh_line,    = plot1.plot([], [], color='orange', linewidth=2, label='Exhaust')
+            plot1.legend(loc='upper right', fontsize='x-small')
+            
+            # --- 1. Update P-V Loop (Top Right) ---
+            idx_intake = (theta_vec < 180)
+            idx_comp   = (theta_vec >= 180) & (theta_vec < 360)
+            idx_power  = (theta_vec >= 360) & (theta_vec < 540)
+            idx_exh    = (theta_vec >= 540)
 
-        # --- 1. Top Left: P-V Loop (High Pressure Scale) ---
-        ax_topleft.clear()
-        ax_topleft.set_title("Fired P-V Loop (WOT)")
-        ax_topleft.plot(v_liters, p_bar, color='red', linewidth=2)
-        ax_topleft.set_ylabel("Pressure (Bar)")
-        ax_topleft.set_ylim(-1, 60) # Scaled for combustion
-        ax_topleft.grid(True, alpha=0.3)
+            self.intake_line.set_data(v_liters[idx_intake], p_bar[idx_intake])
+            self.comp_line.set_data(v_liters[idx_comp], p_bar[idx_comp])
+            self.power_line.set_data(v_liters[idx_power], p_bar[idx_power])
+            self.exh_line.set_data(v_liters[idx_exh], p_bar[idx_exh])
+            
+            plot1.set_xlim(np.min(v_liters) * 0.9, np.max(v_liters) * 1.1)
+            plot1.set_ylim(-0.5, max(15, np.max(p_bar) * 1.1))
 
-        # --- 2. Top Right: Cylinder Pressure Trace ---
-        ax_topright.clear()
-        ax_topright.set_title("Cylinder Pressure vs. CAD")
-        ax_topright.plot(theta_vec, p_bar, color='black')
-        ax_topright.set_ylabel("Bar")
-        ax_topright.set_xlim(0, 720)
-        ax_topright.axvline(360, color='red', linestyle='--', alpha=0.3) # TDC
-        ax_topright.grid(True, alpha=0.3)
+            # --- 2. Top Right: Cylinder Pressure Trace ---
+            plot2.clear()
+            plot2.set_title("Cylinder Pressure vs. CAD")
+            plot2.plot(theta_vec, p_bar, color='black')
+            plot2.set_ylabel("Bar")
+            plot2.set_xlim(0, 720)
+            plot2.axvline(360, color='red', linestyle='--', alpha=0.3) # TDC
+            plot2.grid(True, alpha=0.3)
 
-        # --- 3. Bottom Left: Cumulative Work ---
-        ax_bottomleft.clear()
-        ax_bottomleft.set_title("Cumulative Work Trace")
-        ax_bottomleft.plot(theta_vec, engine_data['work_deg'], color='blue')
-        ax_bottomleft.set_ylabel("Joules")
-        ax_bottomleft.grid(True, alpha=0.3)
+            # --- 3. Bottom Left: Cumulative Work ---
+            plot3.clear()
+            plot3.set_title("Cumulative Work Trace")
+            plot3.plot(theta_vec, engine_data['work_deg'], color='blue')
+            plot3.set_ylabel("Joules")
+            plot3.grid(True, alpha=0.3)
 
-        # --- 4. Bottom Right: Heat Release / Burn Profile ---
-        # Assuming your engine_data logs the heat addition
-        ax_bottomright.clear()
-        ax_bottomright.set_title("Heat Release (Q_in)")
-        q_in = engine_data.get('log_Q_in', np.zeros(720))
-        ax_bottomright.fill_between(theta_vec, q_in, color='orange', alpha=0.5)
-        ax_bottomright.set_ylabel("Joules/Deg")
-        ax_bottomright.set_xlim(300, 450) # Zoom into combustion window
-        ax_bottomright.grid(True, alpha=0.3)
+            # --- 4. Peak Pressure and Angle ---
+            plot4.clear()
+            plot4.set_title("Peak Pressure and Angle")
+            plot4.set_xlabel("cycle")
+            plot4.set_ylabel("Pressure (bar)", color='g')
+            plot4.set_ylim(0, 200)
+            plot4.tick_params(axis='y', labelcolor='g')
+            self.P_peak_line, = plot4.plot([], [], color='green', linewidth=2, markersize=8, label='Pressure (bar)', ls='-')
+
+            # Create twin axis ONCE and store it
+            plot4_ax2 = plot4.twinx()
+            plot4_ax2.set_ylabel("Peak Angle", color='magenta')
+            plot4_ax2.set_ylim(300, 400)
+            plot4_ax2.tick_params(axis='y', labelcolor='magenta')
+            self.P_peak_angle_line, = plot4_ax2.plot([], [], color='magenta', linewidth=2, markersize=8, label='Paek Angle)', ls='dashed')
+            
+
+            self.artists_created = True
+
+        # === DATA PROCESSING ===
+        if not hasattr(self, 'P_peak_data'):
+            self.P_peak_data = []
+            self.P_peak_angle_data = []
+            self.cycle_indices = []
+        
+        P_peak = np.max(engine_data['log_P'])/1e5
+        P_peak_angle = np.argmax(engine_data['log_P'])
+        self.P_peak_data.append(P_peak)
+        self.P_peak_angle_data.append(P_peak_angle)
+        self.cycle_indices.append(len(self.P_peak_data))
+            
+        plot4.set_xlim(0, max(10, len(self.cycle_indices)))
+        self.P_peak_line.set_data(self.cycle_indices, self.P_peak_data)
+        self.P_peak_angle_line.set_data(self.cycle_indices, self.P_peak_angle_data)
 
         # --- 5. THE TABLE (LINE Variable) ---
         net_balance = engine_data['net_work_j'] + engine_data['friction_work_j']
@@ -284,10 +332,10 @@ class WotStrategy(BaseStrategy):
             f"P_Peak Angle:   {engine_data['P_peak_angle']:8.1f}°",
             "----------------------------",
             "ENERGY BREAKDOWN (J):",
-            f"Indicated Work: {engine_data['net_work_j']:8.1f} J",
+            f"Indicated Work: {engine_data['indicated_work_j']:8.1f} J",
             f"Friction Loss:  {engine_data['friction_work_j']:8.1f} J",
-            f"Pumping Loss:   {engine_data['work_pumping_j']:8.1f} J",
-            f"NET BALANCE:    {net_balance:+8.1f} J",
+            f"(Pumping Loss): {engine_data['work_pumping_j']:8.1f} J",
+            f"Brake Work:     {engine_data['net_work_j']:+8.1f} J",
             "----------------------------",
             "STATUS: " + ("ACCELERATING" if net_balance > 0 else "STALLED/DRAGGING")
         ]
@@ -296,7 +344,10 @@ class WotStrategy(BaseStrategy):
     
     
 class MotoringStrategy(BaseStrategy):
-    """ Motor the engine with spark and fuel disabled """
+    """
+    Motor the engine with spark and fuel disabled
+    """
+    
     def __init__(self):
         self.start_rpm = 250
         self.motoring_enabled = True
@@ -309,9 +360,11 @@ class MotoringStrategy(BaseStrategy):
    
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
         # Unpack the two axes from the dashboard manager
-        ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = dashboard_manager.get_strategy_axes()
-        if any(v is None for v in (ax_topleft, ax_topright, ax_bottomleft, ax_bottomright, data)):
+        axes = dashboard_manager.get_strategy_axes()
+        if axes is None or data is None:
             return
+        
+        ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = axes
         
         plot1 = ax_topleft
         plot2 = ax_bottomleft
@@ -347,7 +400,7 @@ class MotoringStrategy(BaseStrategy):
             
             # --- Plot 3 Valve Mechanical Sync ---
             plot3.clear()
-            plot3.set_title("Valve Area & Lift")
+            plot3.set_title("Valve Area & Cd")
             plot3.grid(True, alpha=0.3)
 
             # Area traces (Primary Y - Left)
@@ -355,11 +408,17 @@ class MotoringStrategy(BaseStrategy):
             self.a_exh_line, = plot3.plot([], [], color='orange', linewidth=2, label='Exhaust Area')
             plot3.set_ylabel("Area (m²)")
 
-            # Lift traces (Secondary Y - Right)
-            self.ax_lift = plot3.twinx()
-            self.l_int_line, = self.ax_lift.plot([], [], color='blue', linestyle='--', alpha=0.5, label='Intake Lift')
-            self.l_exh_line, = self.ax_lift.plot([], [], color='orange', linestyle='--', alpha=0.5, label='Exhaust Lift')
-            self.ax_lift.set_ylabel("Lift (m)")
+            # # Lift traces (Secondary Y - Right)
+            # self.ax_lift = plot3.twinx()
+            # self.l_int_line, = self.ax_lift.plot([], [], color='blue', linestyle='--', alpha=0.5, label='Intake Lift')
+            # self.l_exh_line, = self.ax_lift.plot([], [], color='orange', linestyle='--', alpha=0.5, label='Exhaust Lift')
+            # self.ax_lift.set_ylabel("Lift (m)")
+            
+            # Cd traces (Secondary Y - Right)
+            self.ax_Cd = plot3.twinx()
+            self.Cd_i_line, = self.ax_Cd.plot([], [], color='blue', linestyle='--', alpha=0.5, label='Intake Lift')
+            self.Cd_e_line, = self.ax_Cd.plot([], [], color='orange', linestyle='--', alpha=0.5, label='Exhaust Lift')
+            self.ax_Cd.set_ylabel("Cd")
 
             # --- Plot 4: Pumping Loop Detail (Gas Exchange) ---
             plot4.clear()
@@ -419,6 +478,8 @@ class MotoringStrategy(BaseStrategy):
         lift_int_vec = engine_data["intake_lift_vec"]
         lift_exh_vec = engine_data["exhaust_lift_vec"]
         theta_vec = engine_data.get('theta_list')
+        Cd_i_vec = engine_data["Cd_i"]
+        Cd_e_vec = engine_data["Cd_e"]
 
         if area_int_vec is not None and area_exh_vec is not None:
             self.a_int_line.set_data(theta_vec, area_int_vec)
@@ -426,10 +487,15 @@ class MotoringStrategy(BaseStrategy):
             plot3.set_xlim(0, 720)
             plot3.set_ylim(0, max(np.max(area_int_vec), np.max(area_exh_vec)) * 1.2)
             
-        if lift_int_vec is not None and lift_exh_vec is not None:
-            self.l_int_line.set_data(theta_vec, lift_int_vec)
-            self.l_exh_line.set_data(theta_vec, lift_exh_vec)
-            self.ax_lift.set_ylim(0, max(np.max(lift_int_vec), np.max(lift_exh_vec)) * 1.1)
+        # if lift_int_vec is not None and lift_exh_vec is not None:
+        #     self.l_int_line.set_data(theta_vec, lift_int_vec)
+        #     self.l_exh_line.set_data(theta_vec, lift_exh_vec)
+        #     self.ax_lift.set_ylim(0, max(np.max(lift_int_vec), np.max(lift_exh_vec)) * 1.1)
+            
+        if Cd_i_vec is not None and Cd_e_vec is not None:
+            self.Cd_i_line.set_data(theta_vec, Cd_i_vec)
+            self.Cd_e_line.set_data(theta_vec, Cd_e_vec)
+            self.ax_Cd.set_ylim(0, max(np.max(Cd_i_vec), np.max(Cd_e_vec)) * 1.1)
             
             # Calculate the points
             ivo_1mm, ivc_1mm = self.get_lift_timing(theta_vec, lift_int_vec, threshold=1.0) # 0.001m = 1mm
@@ -468,7 +534,7 @@ class MotoringStrategy(BaseStrategy):
         # plot4.set_ylim(0, max(p_bar)*1.1)
         
         # Temporary debug print in your update loop
-        print(f"P_bar range: {np.min(p_bar):.3f} to {np.max(p_bar):.3f}")
+        # print(f"P_bar range: {np.min(p_bar):.3f} to {np.max(p_bar):.3f}")
 
 
         
@@ -500,7 +566,7 @@ class MotoringStrategy(BaseStrategy):
             f"Pumping Loss:   {engine_data['work_pumping_j']:8.1f} J",
             f"Friction Loss:  {fric_work:8.1f} J",
             "----------------------------",
-            f"NET BALANCE:    {total_balance:+8.1f} J",
+            f"Brake Work:    {net_work:+8.1f} J",
         ]
         
         # Status Logic
@@ -509,7 +575,7 @@ class MotoringStrategy(BaseStrategy):
         
         if work_comp > 0 and work_exp < (work_comp * 0.8):
             lines.append("STATUS:         CRITICAL LEAK")
-        elif total_balance > 5.0: # Threshold for numerical "ghost" energy
+        elif net_work > 5.0: # Threshold for numerical "ghost" energy
             lines.append("STATUS:         PHYSICS ERROR (+)")
         else:
             lines.append("STATUS:         HEALTHY")
@@ -543,7 +609,9 @@ class MotoringStrategy(BaseStrategy):
 
 
 class RoadtestStrategy(BaseStrategy):
-    """Realistic open-road driving: hills, varying throttle, altitude effects"""
+    """
+    Realistic open-road driving: hills, varying throttle, altitude effects
+    """
     
     CYCLE_LENGTH = 400  # cycles for one full "drive" loop (~80–40 sec depending on RPM)
     
@@ -665,7 +733,9 @@ class RoadtestStrategy(BaseStrategy):
 
 
 class DynoStrategy(BaseStrategy):
-    """ a variable load Dyno with a full rpm sweep """
+    """
+    A variable load Dyno with a full rpm sweep
+    """
     
     # PID paramters for controller to hold rpm while at WOT.
     DYNO_KP = 1.0  # Proportional Gain 1.5 last know best.
@@ -675,7 +745,7 @@ class DynoStrategy(BaseStrategy):
     MAX_DYNO_TORQUE = 2000     # if your engine peaks at ~500 Nm → 1.5× headroom
 
     # Dyno start and RPM stability parameters
-    DYNO_START_RPM = 2000
+    DYNO_START_RPM = 1500
     DYNO_FINISH_RPM = c.RPM_LIMIT - 500
     DYNO_STEP_SIZE_RPM = 200 # How far to step the RPM target after settling
     DYNO_RPM_TOLERANCE = 5.0
@@ -683,6 +753,8 @@ class DynoStrategy(BaseStrategy):
            
     def __init__(self, rl_dyno_mode=False):
         super().__init__()
+        
+        self.start_rpm = 900 
         
         # rl support
         self.rl_dyno_mode = rl_dyno_mode
@@ -717,6 +789,14 @@ class DynoStrategy(BaseStrategy):
         self.line_torque = None
         self.line_power = None
         
+        # data for other plots
+        self.settled_rpm_log = []
+        self.settled_torque_log = []
+        self.settled_cycles_log = []
+        self.rejection_mass_log = [] # mass that is pushed back into the intake manifold
+        self.rejection_rpm_log = [] # log of live rpms not bounded by 720
+        
+        
         # Stablization flags for downstream services
         self.point_settled = False
         self.last_settled_rpm = 0.0
@@ -725,6 +805,64 @@ class DynoStrategy(BaseStrategy):
         self.last_settled_std = 0.0
         self.dyno_complete = False
            
+    
+    def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
+        """Standardized update called every cycle by the main loop"""
+        axes = dashboard_manager.get_strategy_axes()
+        if axes is None or data is None:
+            return
+        
+        ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = axes
+        plot1 = ax_topleft
+        plot2 = ax_topright
+        plot3 = ax_bottomleft
+        plot4 = ax_bottomright
+        
+        sensors, engine_data, ecu_outputs = data
+
+        # === INITIALIZE ARTISTS (Standard Pattern) ===
+        if not hasattr(self, 'artists_created'):
+            self._setup_plots(plot1, plot2, plot3, plot4)
+            self.artists_created = True
+
+        # === UPDATE THE POWER CURVE ===
+        if self.dyno_curve_data:
+            rpms, torques, powers = zip(*self.dyno_curve_data)
+            self.line_torque.set_data(rpms, torques)
+            self.line_power.set_data(rpms, powers)
+            plot1.set_xlim(min(rpms)-200, max(rpms)+500)
+            
+            
+        # === UPDATE THE BACKFLOW PLOT
+        dm_history = engine_data["dm_in"]
+        gross_inflow = np.sum(dm_history[dm_history > 0])
+        # We focus on the window between BDC (180) and your known IVC (210)
+        backflow_window = dm_history[180:210]
+        rejected_mass = np.sum(np.abs(backflow_window[backflow_window < 0]))
+        rejection_percent = (rejected_mass / gross_inflow * 100) if gross_inflow > 0 else 0
+        self.rejection_mass_log.append(rejection_percent)
+        self.rejection_rpm_log.append(sensors.rpm)
+        
+        self.line_backflow.set_data(self.rejection_rpm_log, self.rejection_mass_log)
+        plot2.set_xlim(min(self.rejection_rpm_log)-200, max(self.rejection_rpm_log)+500)
+        
+        # === UPDATE TEXT OVERLAY ===
+        lines = [
+            f"TARGET RPM:     {self.dyno_target_rpm:8.0f}",
+            f"CURRENT RPM:    {np.mean(sensors.rpm_history):8.1f}",
+            f"SETTLE STATUS:  {self.settled_cycles}/{DynoStrategy.SETTLE_CYCLES_REQUIRED}",
+            "----------------------------",
+            f"BRAKE TORQUE:   {self.pid_output:8.1f} Nm",
+            f"PID P:          {self.pid_error_p:8.1f}",
+            f"PID I:          {self.pid_error_integral:8.1f}",
+            f"PID D:          {self.pid_derivative:8.1f}",
+            "----------------------------",
+            f"STEPS DONE:     {self.steps_completed:8.0f}",
+            f"PEAK ERR:       {self.current_step_peak:8.1f} RPM",
+        ]
+        dashboard_manager.update_strategy_overlay(lines)
+        dashboard_manager.draw()
+    
     def driver_update(self, driver):
         tps = 100.0 # always WOT in dyno mode.
         
@@ -759,27 +897,8 @@ class DynoStrategy(BaseStrategy):
         # Dyno load
         self._set_dyno_target(driver)
         load = self._pid_control(driver) if self.in_dyno_sweep else 0.0
-  
-        # print(
-        #     f"theta: {driver.cycle:4.0f}/{driver.theta:3.0f} | "
-        #     # f"P_err: {self.pid_error_p:5.1f} | "
-        #     # f"Integral: {self.pid_error_integral:5.0f} | "
-        #     # f"derivative: {self.pid_derivative:5.0f} | "
-        #     # f"pid out: {self.pid_output:6.2f} | "
-        #     f"RPM: {driver.rpm:4.0f} | "
-        #     f"target_rpm: {self.dyno_target_rpm:4.0f} | "
-        #     f"mean_rpm: {np.mean(driver.cycle_rpm):4.0f} | "
-        #     f"in_dyno_sweep: {self.in_dyno_sweep}"
-        #     )
         
         return tps, load, c.P_ATM_PA
- 
-    def get_telemetry(self):
-        return {
-            "dyno_settled": (self.settled_cycles >= DynoStrategy.SETTLE_CYCLES_REQUIRED),
-            "target_rpm": self.dyno_target_rpm,
-            "in_dyno_sweep": self.in_dyno_sweep,
-        }   
 
     def _set_dyno_target(self, driver):
         
@@ -845,7 +964,10 @@ class DynoStrategy(BaseStrategy):
 
         # Append to curve for dashboard/history
         self.dyno_curve_data.append((self.dyno_target_rpm, avg_brake_torque, avg_power_kW))
-
+        self.settled_rpm_log.append(self.last_settled_rpm)
+        self.settled_torque_log.append(self.last_settled_torque)
+        self.settled_cycles_log.append(self.settled_cycles)
+        
         # Stats tracking
         self.total_peak_error += self.current_step_peak
         if self.current_step_peak > self.max_peak_error:
@@ -878,16 +1000,7 @@ class DynoStrategy(BaseStrategy):
         # Update cycle counters
         self.total_settle_cycles += DynoStrategy.SETTLE_CYCLES_REQUIRED
         self.steps_completed += 1
-
-        # Dashboard update
-        if getattr(driver, 'dashboard_manager', None):
-            ax, ax_bottom = driver.dashboard_manager.get_strategy_axes()
-            if ax:
-                if not hasattr(self, 'line_torque') or self.line_torque is None:
-                    self._create_dyno_plot(ax)
-                self._update_dyno_plot(ax)
-                driver.dashboard_manager.draw()
-                    
+      
         # Prepare for next point
         self.settled_cycles = 0
         self.current_step_peak = 0.0
@@ -997,44 +1110,33 @@ class DynoStrategy(BaseStrategy):
         else:
             print("   → POOR - Unstable or slow")
 
-    def _create_dyno_plot(self, ax):
-        ax.clear()
-        ax.set_title("Steady-State Dyno Curve")
-        ax.set_xlabel("RPM")
-        ax.set_ylabel("Torque (Nm)", color='g')
-        ax.set_ylim(0, 360)
-        ax.tick_params(axis='y', labelcolor='g')
 
-        self.line_torque, = ax.plot([], [], 'go-', linewidth=2, markersize=8, label='Torque (Nm)')
+    
+    def _setup_plots(self, plot1, plot2, plot3, plot4):
+        
+        # --- PLOT1 DYNO TORQUE and POWER CHART
+        plot1.clear()
+        plot1.set_title("Steady-State Dyno Curve")
+        plot1.set_xlabel("RPM")
+        plot1.set_ylabel("Torque (Nm)", color='g')
+        plot1.set_ylim(0, 360)
+        plot1.tick_params(axis='y', labelcolor='g')
+        self.line_torque, = plot1.plot([], [], color='green', linewidth=2, markersize=8, label='Torque (Nm)', ls='-')
 
         # Create twin axis ONCE and store it
-        self.ax2 = ax.twinx()
-        self.ax2.set_ylabel("Power (kW)", color='m')
-        self.ax2.set_ylim(0, 105)
-        self.ax2.tick_params(axis='y', labelcolor='m')
-        self.line_power, = self.ax2.plot([], [], 'm^--', linewidth=2, markersize=8, label='Power (kW)')
+        plot1_ax2 = plot1.twinx()
+        plot1_ax2.set_ylabel("Power (kW)", color='magenta')
+        plot1_ax2.set_ylim(0, 105)
+        plot1_ax2.tick_params(axis='y', labelcolor='magenta')
+        self.line_power, = plot1_ax2.plot([], [], color='magenta', linewidth=2, markersize=8, label='Power (kW)', ls='dashed')
 
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper left')
-        self.ax2.legend(loc='upper right')
-
-    def _update_dyno_plot(self, ax):
-        if not self.dyno_curve_data:
-            return
-
-        rpms, torques, powers = zip(*self.dyno_curve_data)
-
-        self.line_torque.set_data(rpms, torques)
-        self.line_power.set_data(rpms, powers)
-
-        # Rescale torque axis
-        ax.relim()
-        ax.autoscale_view()
-
-        # Rescale stored power axis (no new twin!)
-        self.ax2.relim()
-        self.ax2.autoscale_view()
-        self.ax2.set_ylim(bottom=0)  # keep floor at 0
-
-        ax.figure.canvas.draw_idle()
-        ax.figure.canvas.flush_events()
+        plot1.grid(True, alpha=0.3)
+        plot1.legend(loc='upper left')
+        plot1_ax2.legend(loc='upper right')
+        
+        # --- Backflow Ratio
+        plot2.set_title("Intake Backflow vs RPM")
+        plot2.set_ylabel("Rejection %")
+        plot2.set_ylim(0, 5)
+        self.line_backflow, = plot2.plot([], [], color='orange', label='Backflow %')
+                

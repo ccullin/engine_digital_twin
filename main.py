@@ -16,8 +16,9 @@ import sys
 
 
 parser = argparse.ArgumentParser(description="Engine Digital Twin")
-parser.add_argument("--mode", choices=["idle", "wot", "dyno", "roadtest", "motor"], required=True)
-parser.add_argument("--debug", action="store_true", default=False)
+parser.add_argument("--mode", choices=["idle", "wot", "dyno", "roadtest", "motor"], help="Run Engine in set mode")
+parser.add_argument("--validate", action="store_true", help="Run physics unit tests and exit")
+parser.add_argument("--debug", action="store_true", default=False, help="run without Dashboard and file logging")
 parser.add_argument("--cycles", type=int, default=3, help="The number of Engine cycles to run")
 parser.add_argument("--rpm", type=int, default=None, help="override the default rpm for the mode")
 parser.add_argument("--can_fuel", action="store_true", default=False, help="Enable fuel injection.  Requires --mode motor")
@@ -62,6 +63,15 @@ class SimulationManager:
 
 
 if __name__ == "__main__":
+    
+    # Run physics unit tests and exit
+    if args.validate:
+        from physics_validator import PhysicsValidator
+        validator = PhysicsValidator(args.cycles)
+        validator.run_tests()
+        sys.exit(0)
+    
+    # Setup to run engine in defined Mode
     driver = DriverInput(mode=args.mode)
     ecu = ECUController()
     
@@ -86,7 +96,7 @@ if __name__ == "__main__":
             system.ecu.is_motoring = system.driver.strategy.motoring_enabled
             system.ecu.fuel_enabled = True if args.can_spark else args.can_fuel
             system.ecu.spark_enabled = args.can_spark
-            system.engine.crank_rpm = args.rpm if args.rpm else 250
+            system.engine.motoring_rpm = args.rpm if args.rpm else 3000
 
             
         exit_now = False

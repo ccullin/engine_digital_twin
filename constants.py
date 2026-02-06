@@ -8,7 +8,7 @@ STROKE = 0.076  # m
 LEN_CONROD = 0.143  # m
 RADIUS_CRANK = STROKE / 2.0  # m
 A_PISTON = np.pi * (BORE / 2.0) ** 2  # m²
-COMP_RATIO = 10
+COMP_RATIO = 9
 V_DISPLACED = A_PISTON * STROKE  # m³ per cylinder
 NUM_CYL = 4
 
@@ -40,17 +40,35 @@ NUM_CYL = 4
     Exhaust opens. 50° BBDC (490 CAD)
     Exhaust closes. 0° ATDC (0 CAD)
 """
+# direct setting at lift=0mm not 1mm
+# VALVE_TIMING = {
+#     'intake': {
+#         'open':       705,  
+#         'close':      228, 
+#         'max_lift':   9.0,  # needs to allow for hydralic lift compression)
+#         'diameter':  40.0   # 40 mm
+#     },
+#     'exhaust': {
+#         'open':       490,  
+#         'close':        5,  
+#         'max_lift':   9.0,  # needs to allow for hydralic lift compression)
+#         'diameter':    34   # 34 mm # DEBUGGING WORKED AT 36 with 10mm lift
+#     }
+# }
+
+
+#set at 1mm height
 VALVE_TIMING = {
     'intake': {
-        'open':       684,  # 
-        'close':      210,  # 
-        'max_lift':  10.0,  # 9.6 mm (10.0 to allow for hydralic lift compression)
+        'open':       15,  # 684
+        'close':      202,  # 210
+        'max_lift':   9.0,  # needs to allow for hydralic lift compression)
         'diameter':  40.0   # 40 mm
     },
     'exhaust': {
-        'open':       460,  # 460 matches factory spec allowing for cam ramp
-        'close':       35,  # 30 matches factory spec allowing for cam ramp
-        'max_lift':  10.0,  # 9.6 mm (10.0 to allow for hydralic lift compression)
+        'open':       517,  # 460 matches factory spec allowing for cam ramp
+        'close':       692,  # 35   30 matches factory spec allowing for cam ramp
+        'max_lift':   9.0,  # needs to allow for hydralic lift compression)
         'diameter':    34   # 34 mm # DEBUGGING WORKED AT 36 with 10mm lift
     }
 }
