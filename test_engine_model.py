@@ -73,7 +73,7 @@ class TestEngineModelIntegration(unittest.TestCase):
 
                 # 4. Set ECU Outputs
                 ecu.spark_timing = get_spark(rpm=rpm)
-                ecu.spark = (CAD == ecu.spark)
+                ecu.spark = (CAD == ecu.spark_timing)
                 
                 # Handle pulse-width wrap-around (if start is negative or across 720)
                 start_trigger = ecu.injector_start % 720
