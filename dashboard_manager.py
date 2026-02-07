@@ -45,7 +45,7 @@ class DashboardManager:
  
             # added additional column for 2 x 2 strategy plots.
             gs = GridSpec(2, 3, figure=self.fig,
-                          width_ratios=[1, 1.5, 1.5],
+                          width_ratios=[1.0, 1.5, 1.5],
                           height_ratios=[1, 1],
                           wspace=0.4,
                           hspace=0.4)
@@ -53,13 +53,13 @@ class DashboardManager:
             # Top-left: Universal base telemetry
             self.base_ax = self.fig.add_subplot(gs[0, 0])
             self.base_ax.axis('off')
-            self.base_text = self.base_ax.text(0.05, 0.95, "", va='top', ha='left',
+            self.base_text = self.base_ax.text(0.0, 1.0, "", va='top', ha='left',
                                               fontsize=10, family='monospace')
 
             # Bottom-left: Strategy-specific overlay table
             self.overlay_ax = self.fig.add_subplot(gs[1, 0])
             self.overlay_ax.axis('off')
-            self.overlay_text = self.overlay_ax.text(0.05, 0.95, "", va='top', ha='left',
+            self.overlay_text = self.overlay_ax.text(0.0, 1.0, "", va='top', ha='left',
                                                     fontsize=10, family='monospace')
             self.overlay_text.set_text("─ STRATEGY TELEMETRY ─\n(No data yet)")
             
@@ -71,7 +71,7 @@ class DashboardManager:
             self.strategy_ax_topleft.set_title("Mode-Specific Panel")
 
             # Clean padding
-            self.fig.subplots_adjust(left=0.05, right=0.95, top=0.93, bottom=0.07)
+            self.fig.subplots_adjust(left=0.02, right=0.95, top=0.93, bottom=0.07)
 
             self.fig.canvas.mpl_connect("key_press_event", self.on_key_press)
             self.fig.canvas.mpl_connect("close_event", self.on_close_event)
