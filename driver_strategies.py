@@ -898,17 +898,6 @@ class DynoStrategy(BaseStrategy):
             if driver.rpm < low_threshold:
                 self.in_dyno_sweep = False
                 print(f"DEBUG: fell out of dyno sweep at rpm: {driver.rpm:4.0f}")
-        
-        
-        
-        # control_rpm = np.mean(driver.cycle_rpm)
-        # if control_rpm >= (DynoStrategy.DYNO_START_RPM - 100):
-        # # if control_rpm >= (DynoStrategy.DYNO_START_RPM - 100) and control_rpm <= DynoStrategy.DYNO_FINISH_RPM:
-        #     self.in_dyno_sweep = True
-        #     tps = 100.0
-        # else:
-        #     self.in_dyno_sweep = False
-        #     tps = 100.0  # keep WOT until end
    
         # Dyno load
         self._set_dyno_target(driver)

@@ -98,18 +98,7 @@ class TestPhysicsFoundation(unittest.TestCase):
         params = self._get_woschni_params(P_curr=60e5, T_curr=2200, V_curr=0.0005)
         loss_low =  pf.calc_woschni_heat_loss(CAD=370, rpm=1500, **params)
         loss_high = pf.calc_woschni_heat_loss(CAD=370, rpm=4500, **params)
-        
-        
-        # # Common state: Peak combustion (370 deg, 60 bar, 2200K)
-        # common_args = {
-        #     "theta": 370, "P_curr": 60e5, "T_curr": 2200, 
-        #     "V_curr": 0.0005, "T_wall": 450, "V_clearance": V_clearance, 
-        #     "theta_delta": 1.0
-        # }
-        
-        # loss_low = pf.calc_woschni_heat_loss(rpm=1500, **common_args)
-        # loss_high = pf.calc_woschni_heat_loss(rpm=4500, **common_args)
-        
+                
         # print(f"\nHeat Loss Test: 1500 RPM: {loss_low:.2f} J/deg | 4500 RPM: {loss_high:.2f} J/deg")
         self.assertGreater(loss_low, loss_high, "Heat loss per degree should be higher at low RPM")
 

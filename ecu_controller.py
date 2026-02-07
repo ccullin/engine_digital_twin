@@ -112,29 +112,7 @@ class ECUController:
         
         # --- idle overrides
         self.idle_afr = 13.8
-        self.filtered_map = 35.0
-        
-
-        # self.output_dict = FixedKeyDictionary(
-        #     {
-        #         "spark": self.spark_active,
-        #         "spark_timing": int(self.spark_advance_btdc),
-        #         "afr_target": self.afr_target,
-        #         "target_rpm": self.idle_target_rpm,
-        #         "iacv_pos": self.idle_valve_position,
-        #         "iacv_wot_equiv": self.iacv_wot_equiv,
-        #         "pid_P": self.pid_P,
-        #         "pid_I" : self.pid_I,
-        #         "pid_D": self.pid_D,
-        #         "trapped_air_mass_kg": self.trapped_air_mass_kg,
-        #         "ve_fraction": self.ve_fraction,
-        #         "injector_on": self.injector_is_active,
-        #         'injector_start_deg'   : int(self.injector_start_timing_degree),
-        #         'injector_end_deg'     : int(self.injector_end_timing_degree),
-        #         "fuel_cut_active": self.fuel_cut_active,
-        #     }
-        # )
-        
+        self.filtered_map = 35.0      
 
 
     # -----------------------------------------------------------------------------------------

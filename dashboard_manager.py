@@ -42,18 +42,8 @@ class DashboardManager:
         if self.fig is None:
             plt.ion()
             self.fig = plt.figure(figsize=(16, 9))
-
-            # 2 rows, 2 columns:
-            # Top-left:    Base universal telemetry (text)
-            # Bottom-left: Strategy-specific telemetry table (text)
-            # Right span:  Full-height strategy chart
-            # gs = GridSpec(2, 2, figure=self.fig,
-            #               width_ratios=[1, 3],
-            #               height_ratios=[1, 1],
-            #               wspace=0.4,
-            #               hspace=0.4)  # increased hspace for separation
-            
-            # added addition column for 2 x 2 strategy plots.
+ 
+            # added additional column for 2 x 2 strategy plots.
             gs = GridSpec(2, 3, figure=self.fig,
                           width_ratios=[1, 1.5, 1.5],
                           height_ratios=[1, 1],
@@ -72,11 +62,6 @@ class DashboardManager:
             self.overlay_text = self.overlay_ax.text(0.05, 0.95, "", va='top', ha='left',
                                                     fontsize=10, family='monospace')
             self.overlay_text.set_text("─ STRATEGY TELEMETRY ─\n(No data yet)")
-
-            # Right side: strategy panel
-            # self.strategy_ax = self.fig.add_subplot(gs[:, 1]) # single combined chart on RHS
-            # self.strategy_ax = self.fig.add_subplot(gs[0, 1]) # top chart on RHS
-            # self.strategy_ax_bottom = self.fig.add_subplot(gs[1, 1]) # bottom chart on RHS
             
             self.strategy_ax_topleft = self.fig.add_subplot(gs[0, 1]) 
             self.strategy_ax_topright = self.fig.add_subplot(gs[0, 2]) 
@@ -156,11 +141,6 @@ class DashboardManager:
         # strategy_ax.cla()  # clear previous strategy plot
         return ax_topleft, ax_topright, ax_bottomleft, ax_bottomright
 
-    # def create_or_update_figure(self, key, create_func, update_func, data=None):
-    #     if key not in self.figures:
-    #         self.figures[key] = create_func()
-    #     update_func(self.figures[key], data)
-
     def show(self):
         plt.ioff()
         plt.show()
@@ -230,27 +210,12 @@ class DashboardManager:
         if event.key == "q":
             self.close_and_cleanup()
 
-
     def on_close_event(self, event):
         """Handles clicking the 'X' button on the window."""
         self.close_and_cleanup()
-
-    # def close_and_cleanup(self):
-    #     """Centralized cleanup and focus return logic."""
-
-    #     # The window close action (either 'q' or 'X' button)
-    #     # must be performed before returning focus.
-    #     # plt.close(self.fig)
-
-    #     self.stopped = True
-    #     self._set_focus("terminal")
     
     def close_and_cleanup(self):
         """Safely close figure and prevent Tkinter toolbar crash on macOS"""
-        # if self.fig is None:
-        #     self.stopped = True
-        #     self._set_focus("terminal")
-        #     return
 
         # --- FIX 1: Disconnect axes observers (prevents late toolbar updates) ---
         try:
