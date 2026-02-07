@@ -5,13 +5,20 @@
 # Copyright (c) 2025 Chris Cullin
 
 import constants as c
-from engine_model import FixedKeyDictionary
 import numpy as np
 import driver_strategies as strategies
 
+from dataclasses import dataclass, field
 
+
+@dataclass(slots=True, frozen=False)
+class DriverOutput:
+    """The interface between the engine physics and the ECU"""
+    throttle_pos:float = 0.0
+    wheel_load:float = 0.0
+    ambient_pressure:float = 0.0
+    
 class DriverInput:
-
     def __init__(self, mode="idle", start_rpm=900):
         self.rpm = 0
         self.cycle = 0 # crank cycle number , which is 720 degrees of rotation
@@ -26,22 +33,16 @@ class DriverInput:
         
         self.strategy = self._create_strategy(mode)
         
-        self.driver_dict = FixedKeyDictionary({
-            "throttle_pos": self.tps,
-            "wheel_load": self.load,
-            "ambient_pressure": self.air_pressure,
-        })
-
+        self.output = DriverOutput
+        
     # ---------------------------------------------------------------------------------
-    def get_driver_dict(self):
-        self.driver_dict.update(
-            {
-                "throttle_pos"      : self.tps,
-                "wheel_load"        : self.load,
-                "ambient_pressure"  : self.air_pressure,
-            }
-        )
-        return self.driver_dict
+    def get_driver_output(self):
+        
+        self.output.throttle_pos = self.tps
+        self.output.wheel_load = self.load
+        self.output.ambient_pressure = self.air_pressure
+        
+        return self.output
 
     # ---------------------------------------------------------------------------------
     def _create_strategy(self, mode):
@@ -78,5 +79,5 @@ class DriverInput:
                
         self.tps, self.load, self.air_pressure = self.strategy.driver_update(self) 
         
-        return self.get_driver_dict()
+        return self.get_driver_output()
         

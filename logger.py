@@ -3,7 +3,6 @@
 import csv
 import time
 from dataclasses import fields
-from engine_model import FixedKeyDictionary
 import sys
 
 LOGFILE = "engine_log.csv"

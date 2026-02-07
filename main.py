@@ -14,6 +14,11 @@ from dashboard_manager import DashboardManager  # ← New real-time manager
 import numpy as np
 import sys
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from driver_input import DriverOutput
+    from engine_model import EngineSensors, EngineTelemetry
+
 
 parser = argparse.ArgumentParser(description="Engine Digital Twin")
 parser.add_argument("--mode", choices=["idle", "wot", "dyno", "roadtest", "motor"], help="Run Engine in set mode")
@@ -21,8 +26,8 @@ parser.add_argument("--validate", action="store_true", help="Run physics unit te
 parser.add_argument("--debug", action="store_true", default=False, help="run without Dashboard and file logging")
 parser.add_argument("--cycles", type=int, default=3, help="The number of Engine cycles to run")
 parser.add_argument("--rpm", type=int, default=None, help="override the default rpm for the mode")
-parser.add_argument("--can_fuel", action="store_true", default=False, help="Enable fuel injection.  Requires --mode motor")
-parser.add_argument("--can_spark", action="store_true", default=False, help="Enable spaek & injection. Requires --mode motor")
+# parser.add_argument("--can_fuel", action="store_true", default=False, help="Enable fuel injection.  Requires --mode motor")
+parser.add_argument("--can_spark", action="store_true", default=False, help="Enable spark & injection. Requires --mode motor")
 args = parser.parse_args()
 
 class SimulationManager:
@@ -41,25 +46,23 @@ class SimulationManager:
         while self.degree_count < 720 and not self.stop_simulation:
             
             # 1. get driver inputs (TPS (accelerator) wheel load (hill or dyno) and ambient air pressure (altitude))
-            driver_dict = self.driver.get_environment(self.engine.sensors.rpm, cycle_count, self.degree_count)
+            driver_outputs:DriverOutput = self.driver.get_environment(self.engine.sensors.rpm, cycle_count, self.degree_count)
 
             # 2. update engine with driver inputs
-            self.engine.sensors.TPS_percent = driver_dict["throttle_pos"]
-            self.engine.sensors.P_ambient = driver_dict["ambient_pressure"]
-            self.engine.state.wheel_load = driver_dict["wheel_load"]
+            self.engine.sensors.TPS_percent = driver_outputs.throttle_pos
+            self.engine.sensors.ambient_pressure = driver_outputs.ambient_pressure
+            self.engine.state.wheel_load = driver_outputs.wheel_load
             
             
             # 3. get the ecu reponse to current engine sensors
-            ecu_outputs_dict = self.ecu.update(self.engine.get_sensors())
+            ecu_outputs = self.ecu.update(self.engine.get_sensors())
             
             # 4. get engine reponse to update ECU inputs
-            sensors, engine_data_dict = self.engine.step(ecu_outputs_dict)
-            
-            
+            sensors , telemtry = self.engine.step(ecu_outputs)            
 
             self.degree_count += 1
 
-        return sensors, engine_data_dict, ecu_outputs_dict
+        return (sensors, telemtry, ecu_outputs)
 
 
 if __name__ == "__main__":
@@ -82,7 +85,7 @@ if __name__ == "__main__":
     dashboard_manager = None
 
     if not args.debug:
-        logger = Logger(engine.get_sensors(), engine.get_engine_data(), ecu.get_outputs())
+        # logger = Logger(engine.get_sensors(), engine.get_engine_data(), ecu.get_outputs())
         dashboard_manager = DashboardManager()  
         
     # Give the current strategy access to the dashboard
@@ -92,19 +95,19 @@ if __name__ == "__main__":
     cycle_count = 0
 
     try:
-        if hasattr(driver.strategy, 'motoring_enabled'):
+        # if hasattr(driver.strategy, 'motoring_enabled'):
+        if args.mode == "motor":
             system.ecu.is_motoring = system.driver.strategy.motoring_enabled
-            system.ecu.fuel_enabled = True if args.can_spark else args.can_fuel
+            system.ecu.fuel_enabled = args.can_spark
             system.ecu.spark_enabled = args.can_spark
-            system.engine.motoring_rpm = args.rpm if args.rpm else 3000
+            system.engine.motoring_rpm = args.rpm if args.rpm else driver.strategy.start_rpm
 
             
         exit_now = False
         while cycle_count < args.cycles and not exit_now:
             exit_now = dashboard_manager.stopped if dashboard_manager else False
             
-            sensors, engine_data_dict, ecu_outputs_dict = system.run_one_cycle(cycle_count)
-            data = (sensors, engine_data_dict, ecu_outputs_dict)
+            data = system.run_one_cycle(cycle_count)
 
 
             # Optional: old-style bulk update every 10 cycles (can keep or remove)
@@ -131,8 +134,8 @@ if __name__ == "__main__":
 
     finally:
         if not args.debug:
-            if logger:
-                logger.close()
+            # if logger:
+            #     logger.close()
             if dashboard_manager:
                 # dashboard_manager.close()  # clean shutdown
                 print("Simulation complete. Close the plot window to exit.")

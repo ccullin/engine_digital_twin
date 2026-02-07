@@ -14,6 +14,12 @@ import platform
 import subprocess
 import os
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from engine_model import EngineSensors
+    from ecu_controller import EcuOutput
+
 
 
 class DashboardManager:
@@ -93,7 +99,9 @@ class DashboardManager:
         if not self.enabled:
             return
 
-        sensors, engine_data_dict, ecu_outputs_dict = data
+        sensors, engine_telemtry, ecu_outputs = data
+        sensors: EngineSensors
+        ecu_outputs: EcuOutput
 
 
         # Build formatted telemetry text
@@ -114,10 +122,10 @@ class DashboardManager:
             f"Knock:          {sensors.knock:8.3f}",
             "",
             "─ ECU Outputs ─",
-            f"Idle Valve:     {ecu_outputs_dict['iacv_pos']:8.2f} %",
-            f"ve_fraction:    {ecu_outputs_dict['ve_fraction']:8.2f}",
-            f"Ignition Adv:   {ecu_outputs_dict['spark_timing']:8.1f} °BTDC",
-            f"Target AFR:     {ecu_outputs_dict['afr_target']:8.2f}",
+            f"Idle Valve:     {ecu_outputs.iacv_pos:8.2f} %", 
+            f"ve_fraction:    {ecu_outputs.ve_fraction:8.2f}",
+            f"Ignition Adv:   {ecu_outputs.spark_timing:8.1f} °BTDC",
+            f"Target AFR:     {ecu_outputs.afr_target:8.2f}",
         ]
 
         telemetry_text = "\n".join(lines)

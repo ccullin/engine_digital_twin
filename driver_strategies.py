@@ -4,11 +4,15 @@
 #
 # Copyright (c) 2025 Chris Cullin
 
+from typing import TYPE_CHECKING
 import constants as c
-from engine_model import FixedKeyDictionary
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
+
+if TYPE_CHECKING:
+    from engine_model import EngineSensors, EngineTelemetry
+    from ecu_controller import EcuOutput
 
 
 # =============================================================================
@@ -58,6 +62,9 @@ class IdleStrategy(BaseStrategy):
         plot4 = ax_bottomright
 
         sensors, engine_data, ecu_outputs = data
+        sensors: EngineSensors
+        engine_data: EngineTelemetry
+        ecu_outputs: EcuOutput
 
         if not hasattr(self, 'artists_created'):
             # --- PLOT 1: PID Response (RPM vs Target & Valve %) ---
@@ -113,16 +120,16 @@ class IdleStrategy(BaseStrategy):
             
 
         # === DATA PROCESSING ===
-        log_cad = engine_data.get('theta_list')
+        log_cad = engine_data.theta_list
         rpm_history = sensors.rpm_history # Assumes 720 length array
         
         # Map ECU outputs (Assume your _idle_pid logic exposes these internal terms)
         # If not available in dict, these will default to 0 for plotting
-        p_val = ecu_outputs['pid_P']
-        i_val = ecu_outputs['pid_I']
-        d_val = ecu_outputs['pid_D']
-        valve_pct = ecu_outputs['iacv_pos']
-        target_rpm = ecu_outputs['target_rpm']
+        p_val = ecu_outputs.pid_P
+        i_val = ecu_outputs.pid_I
+        d_val = ecu_outputs.pid_D
+        valve_pct = ecu_outputs.iacv_pos
+        target_rpm = ecu_outputs.target_rpm
 
         # --- 1. Update RPM Trace (Top) ---
         self.rpm_line.set_data(log_cad, rpm_history)
@@ -153,8 +160,8 @@ class IdleStrategy(BaseStrategy):
         
         self.cycle_history.append(current_cycle)
         self.afr_history.append(sensors.afr)
-        self.spark_history.append(ecu_outputs['spark_timing'])
-        self.valve_history.append(ecu_outputs['iacv_pos'])
+        self.spark_history.append(ecu_outputs.spark_timing)
+        self.valve_history.append(ecu_outputs.iacv_pos)
         
         # Update AFR vs Spark Plot
         self.afr_line.set_data(self.cycle_history, self.afr_history)
@@ -172,7 +179,7 @@ class IdleStrategy(BaseStrategy):
 
         # === IDLE DEBUG TELEMETRY (Left Table) ===
         # Calculate actual AFR error
-        target_afr = ecu_outputs['afr_target']
+        target_afr = ecu_outputs.afr_target
         afr_error = sensors.afr - target_afr
 
         lines = [
@@ -185,15 +192,15 @@ class IdleStrategy(BaseStrategy):
             f"AFR ERROR:      {afr_error:+8.2f}",
             "----------------------------",
             f"IACV POSITION:  {valve_pct:8.2f} %",
-            f"WOT EQUIV:      {ecu_outputs['iacv_wot_equiv']:8.2f} %",
-            f"IGNITION ADV:   {ecu_outputs['spark_timing']:8.1f} °",
+            f"WOT EQUIV:      {ecu_outputs.iacv_wot_equiv:8.2f} %",
+            f"IGNITION ADV:   {ecu_outputs.spark_timing:8.1f} °",
             "",
             "ENERGY AUDIT (Joules):",
-            f"Expansion (Ind):{engine_data['work_expansion_j']:+8.1f} J",
-            f"Friction Loss:  {engine_data['friction_work_j']:8.1f} J",
-            f"Pumping Loss:   {engine_data['work_pumping_j']:8.1f} J",
+            f"Expansion (Ind):{engine_data.state.work_expansion_j:+8.1f} J",
+            f"Friction Loss:  {engine_data.state.friction_work_j:8.1f} J",
+            f"Pumping Loss:   {engine_data.state.work_pumping_j:8.1f} J",
             "----------------------------",
-            f"NET BALANCE:    {engine_data['net_work_j'] + engine_data['friction_work_j']:+8.1f} J",
+            f"NET BALANCE:    {engine_data.state.net_work_j + engine_data.state.friction_work_j:+8.1f} J",
         ]
         
         # Diagnosis Logic
@@ -201,7 +208,7 @@ class IdleStrategy(BaseStrategy):
             lines.append("DIAG:  EXTREME LEAN / STALL")
         elif sensors.rpm < target_rpm - 100 and valve_pct > 95:
             lines.append("DIAG:  INSUFFICIENT AIR (MAXED)")
-        elif abs(afr_error) < 0.5 and (engine_data['net_work_j'] + engine_data['friction_work_j']) < 0:
+        elif abs(afr_error) < 0.5 and (engine_data.state.net_work_j + engine_data.state.friction_work_j) < 0:
             lines.append("DIAG:  HIGH MECHANICAL DRAG")
         else:
             lines.append("DIAG:  IDLE STABLE")
@@ -236,10 +243,13 @@ class WotStrategy(BaseStrategy):
         plot4 = ax_bottomright
 
         sensors, engine_data, ecu_outputs = data
+        sensors: EngineSensors
+        engine_data: EngineTelemetry
+        ecu_outputs: EcuOutput
         
-        theta_vec = engine_data.get('theta_list')
-        p_bar = engine_data['log_P'] / 1e5
-        v_liters = engine_data['log_V'] * 1000.0
+        theta_vec = engine_data.theta_list
+        p_bar = engine_data.cyl.log_P / 1e5
+        v_litres = engine_data.cyl.V_list * 1000.0
         
         if not hasattr(self, 'artists_created'):
             # --- 1. Top Left: P-V Loop (High Pressure Scale) ---
@@ -262,12 +272,12 @@ class WotStrategy(BaseStrategy):
             idx_power  = (theta_vec >= 360) & (theta_vec < 540)
             idx_exh    = (theta_vec >= 540)
 
-            self.intake_line.set_data(v_liters[idx_intake], p_bar[idx_intake])
-            self.comp_line.set_data(v_liters[idx_comp], p_bar[idx_comp])
-            self.power_line.set_data(v_liters[idx_power], p_bar[idx_power])
-            self.exh_line.set_data(v_liters[idx_exh], p_bar[idx_exh])
+            self.intake_line.set_data(v_litres[idx_intake], p_bar[idx_intake])
+            self.comp_line.set_data(v_litres[idx_comp], p_bar[idx_comp])
+            self.power_line.set_data(v_litres[idx_power], p_bar[idx_power])
+            self.exh_line.set_data(v_litres[idx_exh], p_bar[idx_exh])
             
-            plot1.set_xlim(np.min(v_liters) * 0.9, np.max(v_liters) * 1.1)
+            plot1.set_xlim(np.min(v_litres) * 0.9, np.max(v_litres) * 1.1)
             plot1.set_ylim(-0.5, max(15, np.max(p_bar) * 1.1))
 
             # --- 2. Top Right: Cylinder Pressure Trace ---
@@ -282,7 +292,7 @@ class WotStrategy(BaseStrategy):
             # --- 3. Bottom Left: Cumulative Work ---
             plot3.clear()
             plot3.set_title("Cumulative Work Trace")
-            plot3.plot(theta_vec, engine_data['work_deg'], color='blue')
+            plot3.plot(theta_vec, engine_data.state.work_deg, color='blue')
             plot3.set_ylabel("Joules")
             plot3.grid(True, alpha=0.3)
 
@@ -311,8 +321,8 @@ class WotStrategy(BaseStrategy):
             self.P_peak_angle_data = []
             self.cycle_indices = []
         
-        P_peak = np.max(engine_data['log_P'])/1e5
-        P_peak_angle = np.argmax(engine_data['log_P'])
+        P_peak = engine_data.cyl.P_peak_bar
+        P_peak_angle = engine_data.cyl.P_peak_angle
         self.P_peak_data.append(P_peak)
         self.P_peak_angle_data.append(P_peak_angle)
         self.cycle_indices.append(len(self.P_peak_data))
@@ -322,20 +332,20 @@ class WotStrategy(BaseStrategy):
         self.P_peak_angle_line.set_data(self.cycle_indices, self.P_peak_angle_data)
 
         # --- 5. THE TABLE (LINE Variable) ---
-        net_balance = engine_data['net_work_j'] + engine_data['friction_work_j']
+        net_balance = engine_data.state.net_work_j + engine_data.state.friction_work_j
         
         lines = [
             f"WOT POWER AUDIT - RPM: {sensors.rpm:4.0f}",
             "----------------------------",
-            f"Brake Torque:   {np.average(engine_data['torque_history']):8.1f} Nm",
-            f"Peak Pressure:  {engine_data['peak_pressure_bar']:8.2f} Bar",
-            f"P_Peak Angle:   {engine_data['P_peak_angle']:8.1f}°",
+            f"Brake Torque:   {np.average(engine_data.state.torque_brake_history):8.1f} Nm",
+            f"Peak Pressure:  {engine_data.cyl.P_peak_bar:8.2f} Bar",
+            f"P_Peak Angle:   {engine_data.cyl.P_peak_angle:8.1f}°",
             "----------------------------",
             "ENERGY BREAKDOWN (J):",
-            f"Indicated Work: {engine_data['indicated_work_j']:8.1f} J",
-            f"Friction Loss:  {engine_data['friction_work_j']:8.1f} J",
-            f"(Pumping Loss): {engine_data['work_pumping_j']:8.1f} J",
-            f"Brake Work:     {engine_data['net_work_j']:+8.1f} J",
+            f"Indicated Work: {engine_data.state.indicated_work_j:8.1f} J",
+            f"Friction Loss:  {engine_data.state.friction_work_j:8.1f} J",
+            f"(Pumping Loss): {engine_data.state.work_pumping_j:8.1f} J",
+            f"Brake Work:     {engine_data.state.net_work_j:+8.1f} J",
             "----------------------------",
             "STATUS: " + ("ACCELERATING" if net_balance > 0 else "STALLED/DRAGGING")
         ]
@@ -349,7 +359,7 @@ class MotoringStrategy(BaseStrategy):
     """
     
     def __init__(self):
-        self.start_rpm = 250
+        self.start_rpm = 3000
         self.motoring_enabled = True
         
     def driver_update(self, driver):
@@ -372,6 +382,9 @@ class MotoringStrategy(BaseStrategy):
         plot4 = ax_bottomright
 
         sensors, engine_data, ecu_outputs = data
+        sensors: EngineSensors
+        engine_data: EngineTelemetry
+        ecu_outputs: EcuOutput
 
         # === Setup Static Visuals for all plots ===
         if not hasattr(self, 'artists_created'):
@@ -435,15 +448,15 @@ class MotoringStrategy(BaseStrategy):
         # === DATA PROCESSING ===
                 
         # --- PV and Work charts
-        log_p = engine_data.get('log_P') # Pressure in Pa
-        log_v = engine_data.get('log_V') # Volume in m^3
+        log_p = engine_data.cyl.log_P # Pressure in Pa
+        log_v = engine_data.cyl.V_list # Volume in m^3
         
         # Calculate instantaneous work: dW = P * dV
         # Cumulative sum gives the work profile across the 720 degrees
         if log_p is not None and log_v is not None:
             dv = np.diff(log_v, prepend=log_v[0])
-            work_array = engine_data.get('work_deg')
-            log_cad = engine_data.get('theta_list') 
+            work_array = engine_data.state.work_deg
+            log_cad = engine_data.theta_list 
             v_liters = log_v * 1000.0
             p_bar = log_p / 1e5
             
@@ -473,13 +486,13 @@ class MotoringStrategy(BaseStrategy):
             plot2.set_ylim(y_min - margin, y_max + margin)
         
         # --- Valve and Pressure charts
-        area_int_vec = engine_data.get('intake_area_vec') 
-        area_exh_vec = engine_data.get('exhaust_area_vec')
-        lift_int_vec = engine_data["intake_lift_vec"]
-        lift_exh_vec = engine_data["exhaust_lift_vec"]
-        theta_vec = engine_data.get('theta_list')
-        Cd_i_vec = engine_data["Cd_i"]
-        Cd_e_vec = engine_data["Cd_e"]
+        area_int_vec = engine_data.valves.intake_area_table 
+        area_exh_vec = engine_data.valves.exhaust_area_table
+        lift_int_vec = engine_data.valves.exhaust_lift_table
+        lift_exh_vec = engine_data.valves.exhaust_lift_table
+        theta_vec = engine_data.theta_list
+        Cd_i_vec = engine_data.cyl.Cd_in_history
+        Cd_e_vec = engine_data.cyl.Cd_ex_history
 
         if area_int_vec is not None and area_exh_vec is not None:
             self.a_int_line.set_data(theta_vec, area_int_vec)
@@ -521,7 +534,7 @@ class MotoringStrategy(BaseStrategy):
 
         # 2. Update Pumping Pressure (Bottom-Right)
         # We use the full 720 P list but zoom the Y-axis
-        p_bar = engine_data['log_P'] / 1e5
+        p_bar = engine_data.cyl.log_P / 1e5
         self.p_pump_trace.set_data(theta_vec, p_bar)
         plot4.set_xlim(0, 720)
         plot4.set_xticks([0, 180, 360, 540, 720])
@@ -541,8 +554,8 @@ class MotoringStrategy(BaseStrategy):
             
 
         # === Energy Audit Overlay (Bottom Left Table) ===
-        net_work = engine_data["net_work_j"]
-        fric_work = engine_data["friction_work_j"]
+        net_work = engine_data.state.net_work_j
+        fric_work = engine_data.state.friction_work_j
         total_balance = net_work + fric_work
 
         lines = [
@@ -553,25 +566,25 @@ class MotoringStrategy(BaseStrategy):
             # f"dm_out Total: {np.sum(engine_data['dm_out']):8.4f} kg",
             # f"dm Flow Var:  {np.std(engine_data['dm_in']):8.6f}", # High variance = oscillation
             # "----------------------------",
-            f"T_ind_avg:      {np.average(engine_data['torque_I_history']):8.1f} Nm",
-            f"T_fric_avg:     {np.average(engine_data['torque_F_history']):8.1f} Nm",
-            f"T_brake_avg:    {np.average(engine_data['torque_history']):8.1f} Nm",
+            f"T_ind_avg:      {np.average(engine_data.state.torque_indicated_history):8.1f} Nm",
+            f"T_fric_avg:     {np.average(engine_data.state.torque_friction_history):8.1f} Nm",
+            f"T_brake_avg:    {np.average(engine_data.state.torque_brake_history):8.1f} Nm",
             "----------------------------",
-            f"Peak Press:     {engine_data['peak_pressure_bar']:8.2f} Bar",
-            f"P_peak_angle:      {engine_data['P_peak_angle']:3.0f}",
+            f"Peak Press:     {engine_data.cyl.P_peak_bar:8.2f} Bar",
+            f"P_peak_angle:      {engine_data.cyl.P_peak_angle:3.0f}",
             "",
             "ENERGY AUDIT (Joules):",
-            f"Compression:    {engine_data['work_compression_j']:8.1f} J",
-            f"Expansion:      {engine_data['work_expansion_j']:+8.1f} J",
-            f"Pumping Loss:   {engine_data['work_pumping_j']:8.1f} J",
+            f"Compression:    {engine_data.state.work_compression_j:8.1f} J",
+            f"Expansion:      {engine_data.state.work_expansion_j:+8.1f} J",
+            f"Pumping Loss:   {engine_data.state.work_pumping_j:8.1f} J",
             f"Friction Loss:  {fric_work:8.1f} J",
             "----------------------------",
             f"Brake Work:    {net_work:+8.1f} J",
         ]
         
         # Status Logic
-        work_exp = engine_data.get('work_expansion_j', 0)
-        work_comp = abs(engine_data.get('work_compression_j', 0))
+        work_exp = engine_data.state.work_expansion_j
+        work_comp = abs(engine_data.state.work_compression_j)
         
         if work_comp > 0 and work_exp < (work_comp * 0.8):
             lines.append("STATUS:         CRITICAL LEAK")
@@ -819,6 +832,9 @@ class DynoStrategy(BaseStrategy):
         plot4 = ax_bottomright
         
         sensors, engine_data, ecu_outputs = data
+        sensors: EngineSensors
+        engine_data: EngineTelemetry
+        ecu_outputs: EcuOutput
 
         # === INITIALIZE ARTISTS (Standard Pattern) ===
         if not hasattr(self, 'artists_created'):
@@ -834,7 +850,7 @@ class DynoStrategy(BaseStrategy):
             
             
         # === UPDATE THE BACKFLOW PLOT
-        dm_history = engine_data["dm_in"]
+        dm_history = engine_data.cyl.dm_in_history
         gross_inflow = np.sum(dm_history[dm_history > 0])
         # We focus on the window between BDC (180) and your known IVC (210)
         backflow_window = dm_history[180:210]

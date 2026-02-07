@@ -11,8 +11,13 @@ import constants as c
 import sys
 import collections.abc
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-@dataclass
+if TYPE_CHECKING:
+    from ecu_controller import EcuOutput
+
+
+@dataclass(slots=True, frozen=False)
 class EngineSensors:
     """The interface between the engine physics and the ECU"""
     rpm: float
@@ -38,7 +43,7 @@ class EngineSensors:
     
 
 
-@ dataclass
+@dataclass(slots=True, frozen=False)
 class CylinderState:
     """Master Cylinder (Cyl 1) Attributes and Instantaneous State"""
     
@@ -101,6 +106,7 @@ class CylinderState:
     knock_intensity: float = 0.0
     air_mass_at_spark: float = 0.0
     fuel_mass_at_spark: float = 0.0
+    total_mass_at_spark: float = 0.0
     ignition_start_theta: float = 0.0
     m_vibe: float = 0.0
    
@@ -120,7 +126,7 @@ class CylinderState:
         
 
     
-@dataclass
+@dataclass(slots=True, frozen=False)
 class Valve:
     """stores valve geometry"""
     open_angle: float
@@ -128,7 +134,7 @@ class Valve:
     max_lift: float
     diameter: float
         
-@dataclass    
+@dataclass(slots=True, frozen=False)
 class Valves:
     intake: Valve = field(default_factory=lambda: Valve(
         c.VALVE_TIMING['intake']['open'] % 720,
@@ -161,7 +167,7 @@ class Valves:
  
         
 
-@dataclass
+@dataclass(slots=True, frozen=False)
 class EngineState:
     """Mechanical and Operational State of the Engine"""
     
@@ -190,73 +196,112 @@ class EngineState:
     
     # engine output
     wheel_load: float = 0.0
+    torque_indicated: float = 0.0
     torque_friction: float = 0.0
     torque_brake: float = 0.0
     torque_governor_history: np.ndarray = field(default_factory=lambda: np.zeros(720)) # when motoring measure the torque required to hold rpm
     
+    # friction breakdown
+    torque_friction_piston: float = 0.0
+    torque_friction_global: float = 0.0 # captures valve train, oil pump, bearing friction
+    torque_friction_piston_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
+    torque_friction_global_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
+  
+    # work audit
+    work_deg: np.ndarray = field(default_factory=lambda: np.zeros(720))
+    work_pumping_j: float = 0.0
+    work_compression_j: float = 0.0
+    work_expansion_j: float = 0.0
+    work_net_indicated_j: float = 0.0
+    work_gross_indicated_j: float = 0.0
+     
+    @property
+    def map_avg_kPa(self) -> float:
+        return np.mean(self.map_history)
+    
+    @property
+    def friction_work_j(self) -> float:
+        return np.sum(self.torque_friction_history) * np.pi / 180.0
+    
+    @property
+    def net_work_j(self) -> float:
+        return np.sum(self.torque_brake_history) * np.pi / 180.0
+    
+    @property
+    def indicated_work_j(self) -> float:
+        return np.sum(self.torque_indicated_history) * np.pi / 180.0
+    
+    
+@dataclass(slots=True, frozen=True)
+class EngineTelemetry:
+    """includes all status information """
+    cyl: CylinderState
+    valves: Valves
+    state: EngineState
+    
+    theta_list: np.ndarray = field(default_factory=lambda: np.arange(720).astype(int))
     
 
-class FixedKeyDictionary(dict):
-    """A dictionary that only allows assignments or updates to predefined keys."""
+# class FixedKeyDictionary(dict):
+#     """A dictionary that only allows assignments or updates to predefined keys."""
 
-    def __init__(self, *args, **kwargs):
-        # We allow keys to be set ONLY during the initial super().__init__ call
-        super().__init__(*args, **kwargs)
-        # Store the set of valid keys defined at creation
-        self._valid_keys = set(self.keys())
-        self._is_initialized = True
+#     def __init__(self, *args, **kwargs):
+#         # We allow keys to be set ONLY during the initial super().__init__ call
+#         super().__init__(*args, **kwargs)
+#         # Store the set of valid keys defined at creation
+#         self._valid_keys = set(self.keys())
+#         self._is_initialized = True
 
-    def __setitem__(self, key, value):
-        # 1. Enforce key restriction for single assignment (d[key] = value)
-        if hasattr(self, "_is_initialized") and key not in self._valid_keys:
-            raise KeyError(
-                f"Attempted to assign a new key '{key}'. "
-                f"Only existing keys ({list(self._valid_keys)}) are allowed."
-            )
-        super().__setitem__(key, value)
+#     def __setitem__(self, key, value):
+#         # 1. Enforce key restriction for single assignment (d[key] = value)
+#         if hasattr(self, "_is_initialized") and key not in self._valid_keys:
+#             raise KeyError(
+#                 f"Attempted to assign a new key '{key}'. "
+#                 f"Only existing keys ({list(self._valid_keys)}) are allowed."
+#             )
+#         super().__setitem__(key, value)
 
-    def update(self, other=None, **kwargs):
-        """Overrides dict.update() to enforce key restriction."""
-        if hasattr(self, "_is_initialized"):
+#     def update(self, other=None, **kwargs):
+#         """Overrides dict.update() to enforce key restriction."""
+#         if hasattr(self, "_is_initialized"):
 
-            # Check keys from the 'other' argument (e.g., d.update(new_dict))
-            if other:
-                if isinstance(other, collections.abc.Mapping):
-                    # If 'other' is a dictionary or mapping
-                    incoming_keys = other.keys()
-                else:
-                    # If 'other' is a sequence of (key, value) pairs
-                    incoming_keys = [k for k, v in other]
+#             # Check keys from the 'other' argument (e.g., d.update(new_dict))
+#             if other:
+#                 if isinstance(other, collections.abc.Mapping):
+#                     # If 'other' is a dictionary or mapping
+#                     incoming_keys = other.keys()
+#                 else:
+#                     # If 'other' is a sequence of (key, value) pairs
+#                     incoming_keys = [k for k, v in other]
 
-                for key in incoming_keys:
-                    if key not in self._valid_keys:
-                        raise KeyError(
-                            f"Attempted to update with a new key '{key}' from other. "
-                            f"Only existing keys are allowed."
-                        )
+#                 for key in incoming_keys:
+#                     if key not in self._valid_keys:
+#                         raise KeyError(
+#                             f"Attempted to update with a new key '{key}' from other. "
+#                             f"Only existing keys are allowed."
+#                         )
 
-            # Check keys from keyword arguments (e.g., d.update(key1=value1))
-            for key in kwargs:
-                if key not in self._valid_keys:
-                    raise KeyError(
-                        f"Attempted to update with a new key '{key}' from kwargs. "
-                        f"Only existing keys are allowed."
-                    )
+#             # Check keys from keyword arguments (e.g., d.update(key1=value1))
+#             for key in kwargs:
+#                 if key not in self._valid_keys:
+#                     raise KeyError(
+#                         f"Attempted to update with a new key '{key}' from kwargs. "
+#                         f"Only existing keys are allowed."
+#                     )
 
-        # If all checks pass OR if we are still initializing, call the original update
-        super().update(other, **kwargs)
+#         # If all checks pass OR if we are still initializing, call the original update
+#         super().update(other, **kwargs)
 
-    def setdefault(self, key, default=None):
-        """Overrides dict.setdefault() to enforce key restriction."""
-        # setdefault only adds a key if it's MISSING.
-        # If the key is missing AND initialization is complete, we must raise an error.
-        if hasattr(self, "_is_initialized") and key not in self._valid_keys:
-            raise KeyError(
-                f"Attempted to set a new key '{key}' using setdefault. "
-                f"Only existing keys are allowed."
-            )
-        return super().setdefault(key, default)
-
+#     def setdefault(self, key, default=None):
+#         """Overrides dict.setdefault() to enforce key restriction."""
+#         # setdefault only adds a key if it's MISSING.
+#         # If the key is missing AND initialization is complete, we must raise an error.
+#         if hasattr(self, "_is_initialized") and key not in self._valid_keys:
+#             raise KeyError(
+#                 f"Attempted to set a new key '{key}' using setdefault. "
+#                 f"Only existing keys are allowed."
+#             )
+#         return super().setdefault(key, default)
 
 
 class EngineModel:
@@ -266,6 +311,9 @@ class EngineModel:
         self.state = EngineState()
         self.sensors = EngineSensors(rpm=rpm)
         self.valves = Valves()
+        self.telemtry = EngineTelemetry(cyl=self.cyl, valves=self.valves, state=self.state)
+        
+    
         
         # counters
         # self.state.next_theta = self.valves.intake.open_angle # start the engine at IVO, useful for debugging
@@ -279,45 +327,47 @@ class EngineModel:
         self.motoring_rpm = 0.0  # in motoring mode the driver strategy will set this for engine analysis.
 
 
-        self.engine_data_dict = FixedKeyDictionary({
-            "theta": 0,
-            "torque_history": self.state.torque_brake_history,
-            "torque_I_history" : self.state.torque_indicated_history,
-            "torque_F_history" : self.state.torque_friction_history,
-            # "rpm_history": self.sensors.rpm_history,
-            "power_history": self.state.power_history,
-            "air_mass_per_cyl_kg": self.cyl.air_mass_kg,          # per cylinder average
-            "peak_pressure_bar": self.cyl.P_peak_bar,
-            "map_avg_kPa": np.mean(self.state.map_history),
-            "torque_std_nm": np.std(self.state.torque_brake_history),
-            "trapped_air_mass_kg": self.cyl.total_mass_kg,  ##  NOTE THE NAME IS NOT CORRECT
-            "peak_pressure_pa": np.max(self.cyl.log_P),
-            "peak_temperature_k": np.max(self.cyl.log_T),
-            "P_peak_angle": self.cyl.P_peak_angle,
+        # self.engine_data_dict = FixedKeyDictionary({
+        #     "theta": 0,
+        #     "torque_history": self.state.torque_brake_history,
+        #     "torque_I_history" : self.state.torque_indicated_history,
+        #     "torque_F_history" : self.state.torque_friction_history,
+        #     # "rpm_history": self.sensors.rpm_history,
+        #     "power_history": self.state.power_history,
+        #     "air_mass_per_cyl_kg": self.cyl.air_mass_kg,          # per cylinder average
+        #     "peak_pressure_bar": self.cyl.P_peak_bar,
+        #     "map_avg_kPa": np.mean(self.state.map_history),
+        #     "torque_std_nm": np.std(self.state.torque_brake_history),
+        #     "trapped_air_mass_kg": self.cyl.total_mass_kg,  ##  NOTE THE NAME IS NOT CORRECT
+        #     "peak_pressure_pa": np.max(self.cyl.log_P),
+        #     "peak_temperature_k": np.max(self.cyl.log_T),
+        #     "P_peak_angle": self.cyl.P_peak_angle,
             
             
-            # The Energy Audit
-            "work_pumping_j": 0.0,
-            "work_compression_j": 0.0,
-            "work_expansion_j": 0.0,
-            "net_work_j": 0.0,
-            "indicated_work_j": 0.0,
-            "friction_work_j": np.sum(self.state.torque_friction_history * (np.pi / 180.0)),
-            "log_P": self.cyl.log_P, # The 720-degree pressure history
-            "log_V": self.cyl.V_list, # The 720-degree volume history
-            "dm_in": self.cyl.dm_in_history,  # Add this to debug oscillations
-            "dm_out": self.cyl.dm_ex_history, # Add this
-            "Cd_i": self.cyl.Cd_in_history,
-            "Cd_e": self.cyl.Cd_ex_history,
-            "work_deg": 0.0,
-            "theta_list": np.arange(720).astype(int),
+        #     # The Energy Audit
+        #     "work_deg": 0.0,
+        #     "work_pumping_j": 0.0,
+        #     "work_compression_j": 0.0,
+        #     "work_expansion_j": 0.0,
+        #     "net_work_j": 0.0,
+        #     "work_net_indicated_j": 0.0,
+        #     "work_gross_indicated_j": 0.0
+        #     "friction_work_j": np.sum(self.state.torque_friction_history * (np.pi / 180.0)),
+        #     "log_P": self.cyl.log_P, # The 720-degree pressure history
+        #     "log_V": self.cyl.V_list, # The 720-degree volume history
+        #     "dm_in": self.cyl.dm_in_history,  # Add this to debug oscillations
+        #     "dm_out": self.cyl.dm_ex_history, # Add this
+        #     "Cd_i": self.cyl.Cd_in_history,
+        #     "Cd_e": self.cyl.Cd_ex_history,
+
+        #     "theta_list": np.arange(720).astype(int),
             
-            # Valve and Pressure analysis in Motoring strategy
-            "intake_area_vec": self.valves.intake_area_table,
-            "exhaust_area_vec": self.valves.exhaust_area_table,
-            "intake_lift_vec": self.valves.intake_lift_table,
-            "exhaust_lift_vec": self.valves.exhaust_lift_table,
-        })
+        #     # Valve and Pressure analysis in Motoring strategy
+        #     "intake_area_vec": self.valves.intake_area_table,
+        #     "exhaust_area_vec": self.valves.exhaust_area_table,
+        #     "intake_lift_vec": self.valves.intake_lift_table,
+        #     "exhaust_lift_vec": self.valves.exhaust_lift_table,
+        # })
         
         # self.print_geom()
 
@@ -333,64 +383,69 @@ class EngineModel:
         
 
     # ----------------------------------------------------------------------
-    def get_engine_data(self):
-        work_stats = self._calculate_cycle_work()
-        rad_per_degree = np.pi / 180.0
+    # def get_engine_data(self):
+        # work_stats = self._calculate_cycle_work()
+        # rad_per_degree = np.pi / 180.0
         
-        self.engine_data_dict.update({
-            "theta": self.state.current_theta,
-            "torque_history": self.state.torque_brake_history,
-            "torque_I_history" : self.state.torque_indicated_history,
-            "torque_F_history" : self.state.torque_friction_history,
-            # "rpm_history": self.sensors.rpm_history,
-            "power_history": self.state.power_history,
-            "air_mass_per_cyl_kg": self.cyl.air_mass_kg,          # per cylinder average
-            "peak_pressure_bar": self.cyl.P_peak_bar,
-            "map_avg_kPa": np.mean(self.state.map_history),
-            "torque_std_nm": np.std(self.state.torque_brake_history),
+        # self.engine_data_dict.update({
+            # "theta": self.state.current_theta,
+            # "torque_history": self.state.torque_brake_history,
+            # "torque_I_history" : self.state.torque_indicated_history,
+            # "torque_F_history" : self.state.torque_friction_history,
+            # # "rpm_history": self.sensors.rpm_history,
+            # "power_history": self.state.power_history,
+            # "air_mass_per_cyl_kg": self.cyl.air_mass_kg,          # per cylinder average
+            # "peak_pressure_bar": self.cyl.P_peak_bar,
+            # "map_avg_kPa": np.mean(self.state.map_history),
+            # "torque_std_nm": np.std(self.state.torque_brake_history), ## ASSUME NOT REQUIRED
 
             # required for motoring dtrategy plot
-            "trapped_air_mass_kg": self.cyl.total_mass_kg,
-            "peak_pressure_pa": np.max(self.cyl.log_P),
-            "peak_temperature_k": np.max(self.cyl.log_T),
-            "P_peak_angle": self.cyl.P_peak_angle,
+            # "trapped_air_mass_kg": self.cyl.total_mass_kg,
+            # "peak_pressure_pa": np.max(self.cyl.log_P),  ## ASUMME NOT REQUIRED
+            # "peak_temperature_k": np.max(self.cyl.log_T),  ## ASSUME NOT REQUIRED
+            # "P_peak_angle": self.cyl.P_peak_angle,
+
             
             # The Energy Audit
-            "work_pumping_j": work_stats["work_pumping_j"],
-            "work_compression_j": work_stats["work_compression_j"],
-            "work_expansion_j": work_stats["work_expansion_j"],
-            "friction_work_j": np.sum(self.state.torque_friction_history) * rad_per_degree,
-            "net_work_j": np.sum(self.state.torque_brake_history) * rad_per_degree,
-            "indicated_work_j": np.sum(self.state.torque_indicated_history) * rad_per_degree,
-            "log_P": self.cyl.log_P, # The 720-degree pressure history
-            "log_V": self.cyl.V_list, # The 720-degree volume history
-            "dm_in": self.cyl.dm_in_history,  
-            "dm_out": self.cyl.dm_ex_history, 
-            "Cd_i": self.cyl.Cd_in_history,
-            "Cd_e": self.cyl.Cd_ex_history,
-            # "ve_fraction": self.state.ve_fraction,
-            # "friction_torque_nm": self.mechanics.friction_torque
-            "work_deg": work_stats["work_deg"],
-            "theta_list": np.arange(720).astype(int),
+            # "work_deg": work_stats["work_deg"],
+            # "work_pumping_j": work_stats["work_pumping_j"],
+            # "work_compression_j": work_stats["work_compression_j"],
+            # "work_expansion_j": work_stats["work_expansion_j"],
+            # "work_net_indicated_j": work_stats["work_net_indicated_j"],
+            # "work_gross_indicated_j": work_stats["work_gross_indicated_j"],
+            # "friction_work_j": np.sum(self.state.torque_friction_history) * rad_per_degree,
+            # "net_work_j": np.sum(self.state.torque_brake_history) * rad_per_degree,
+            # "indicated_work_j": np.sum(self.state.torque_indicated_history) * rad_per_degree,
+            # "log_P": self.cyl.log_P, # The 720-degree pressure history
+            # "log_V": self.cyl.V_list, # The 720-degree volume history
+            # "dm_in": self.cyl.dm_in_history,  
+            # "dm_out": self.cyl.dm_ex_history, 
+            # "Cd_i": self.cyl.Cd_in_history,
+            # "Cd_e": self.cyl.Cd_ex_history,
+            # # "ve_fraction": self.state.ve_fraction,
+            # # "friction_torque_nm": self.mechanics.friction_torque
+
+            # "theta_list": np.arange(720).astype(int),
             
             # Valve and Pressure analysis in Motoring strategy
-            "intake_area_vec": self.valves.intake_area_table,
-            "exhaust_area_vec": self.valves.exhaust_area_table,
-            "intake_lift_vec": self.valves.intake_lift_table,
-            "exhaust_lift_vec": self.valves.exhaust_lift_table,
-            })
+            # "intake_area_vec": self.valves.intake_area_table,
+            # "exhaust_area_vec": self.valves.exhaust_area_table,
+            # "intake_lift_vec": self.valves.intake_lift_table,
+            # "exhaust_lift_vec": self.valves.exhaust_lift_table,
+        #     })
 
-        return self.engine_data_dict
+        # return self.engine_data_dict
 
 
     # =================================================================
     # REAL-TIME STEP — CALLED EVERY DEGREE
     # =================================================================
-    def step(self, ecu_outputs):
+    def step(self, ecu_outputs: EcuOutput):
         """
         Called every crank degree (or every 6°/10° if you want).
         This is how real ECUs work.
         """
+        
         
         self.state.current_theta = self.state.next_theta
         CAD = int(self.state.current_theta) # Crank Angle Deegree
@@ -412,10 +467,10 @@ class EngineModel:
 
         self._handle_step_end(CAD, ecu_outputs)
 
-        return self.get_sensors(), self.get_engine_data()
+        return self.sensors, self.telemtry
     
     # ----------------------------------------------------------------------
-    def _step_one_degree(self, ecu_outputs):
+    def _step_one_degree(self, ecu_outputs:EcuOutput):
         """
         Called every 1° of crank rotation.
         """        
@@ -460,7 +515,7 @@ class EngineModel:
             self.cyl.Cd_ex_history[CAD] += deltas['Cd_e'] / n_sub
             
             # 2. Volume and Heat Loss
-            Q_in_sub = self._calculate_combustion_heat_substep(CAD, substep, substep_size, ecu_outputs["spark"])
+            Q_in_sub = self._calculate_combustion_heat_substep(CAD, substep, substep_size, ecu_outputs.spark)
             Q_loss_sub = pf.calc_woschni_heat_loss(CAD=CAD + (substep * substep_size), rpm=self.sensors.rpm, cyl=self.cyl, valves=self.valves)
             Q_loss_sub_joules = Q_loss_sub * substep_size
             
@@ -547,7 +602,7 @@ class EngineModel:
 
         # UPDATE INTAKE MANIFOLD PRESSURE (MAP SENSOR) 
         # calc total throttle fraction
-        idle_valve = ecu_outputs["iacv_wot_equiv"]
+        idle_valve = ecu_outputs.iacv_wot_equiv
         effective_tps = np.clip(self.sensors.TPS_percent + idle_valve, 0, 100)
         self.state.effective_tps = effective_tps
         tps_frac = np.clip(effective_tps / 100.0, 0.0, 1.0)
@@ -555,8 +610,8 @@ class EngineModel:
 
         
         # update heat loss trackers for Engine Data reporting
-        self.cyl.Q_in = Q_in_step_sum
-        self.cyl.Q_loss = Q_loss_step_sum
+        self.cyl.Q_in_step_sum = Q_in_step_sum
+        self.cyl.Q_loss_step_sum = Q_loss_step_sum
 
         
         #  MECHANICAL DYNAMICS (Calculated once per degree using final state)
@@ -571,7 +626,7 @@ class EngineModel:
             
     # --- Helper Methods to maintain functionality ---
     
-    def _calc_flow_deltas(self, ecu_outputs, step_size):
+    def _calc_flow_deltas(self, ecu_outputs:EcuOutput, step_size):
         """
         PURE FUNCTION: Calculates mass and property deltas for a substep.
         Does NOT modify self.cyl state.
@@ -607,7 +662,7 @@ class EngineModel:
 
         # 3. Fuel Calculation (Scale by step_size)
         dm_f = 0.0
-        if ecu_outputs["injector_on"]:
+        if ecu_outputs.injector_on:
             fuel_cc_per_subdeg = c.INJECTOR_FLOW_CC_PER_MIN * step_size/ (current_rpm_safe * 360.0)
             dm_f = fuel_cc_per_subdeg * c.FUEL_DENSITY_KG_CC 
             self.temp_total_dm_f += dm_f
@@ -1088,7 +1143,7 @@ class EngineModel:
         
         self.cyl.Q_loss_total = 0.0 # reset at start so it can be used by analysis at end
 
-    def _handle_cycle_end(self, ecu_outputs):
+    def _handle_cycle_end(self, ecu_outputs:EcuOutput):
         CAD = int(self.state.current_theta)
         
         # determine peak pressure and peak pressure angle for dashboard reporting
@@ -1170,7 +1225,7 @@ class EngineModel:
         Calculates friction for all 4 cylinders based on their specific 
         position in the 720 degree cycle.
         """
-        total_fric_torque = 0
+        total_friction_torque = 0
         
         # Offsets for a 4-cylinder engine
         offsets = [0, 180, 360, 540]
@@ -1182,29 +1237,50 @@ class EngineModel:
             
             # Calculate friction for THIS cylinder at THIS specific position
             t_fric_cyl = pf.calc_single_cylinder_friction(cyl_cad, rpm, cyl_p, clt)
-            total_fric_torque += t_fric_cyl
+            total_friction_torque += t_fric_cyl
         
         global_parasitic = pf.calc_engine_core_friction(rpm=rpm, clt=clt)
+                
+        self.state.torque_friction_piston = total_friction_torque
+        self.state.torque_friction_piston_history[CAD] = total_friction_torque
+        
+        self.state.torque_friction_global = global_parasitic
+        self.state.torque_friction_global_history[CAD] = global_parasitic
+        
+
          
-        return total_fric_torque + global_parasitic
+        return total_friction_torque + global_parasitic
         
     
     # ----------------------------------------------------------------------
     def _calculate_cycle_work(self):
         """
+        Calculates Engine Work Done 
         Integrates P*dV across the four strokes to find the work done in Joules.
         Positive = Engine producing work. Negative = Engine consuming energy.
         """
-        # Instantaneous work for every degree (Joules)
-        # Note: dV must be in m^3, P in Pa
-        work_deg = self.cyl.log_P * self.cyl.dV_list
+        # 1. Calculate base work for the master cylinder
+        # work = P * dV (Joules per degree)
+        w_cyl = self.cyl.log_P * self.cyl.dV_list
         
-        # Slice by standard 4-stroke boundaries
-        # 0-180: Intake | 180-360: Comp | 360-540: Power | 540-720: Exhaust
-        pumping_in   = np.sum(work_deg[0:180])
-        compression  = np.sum(work_deg[180:360])
-        expansion    = np.sum(work_deg[360:540])
-        pumping_ex   = np.sum(work_deg[540:720])
+        # 2. Create the Engine-Level work_deg array
+        # We sum 4 versions of the array, each shifted by the firing interval (180 deg)
+        engine_work_deg = (
+            w_cyl + 
+            np.roll(w_cyl, 180) + 
+            np.roll(w_cyl, 360) + 
+            np.roll(w_cyl, 540)
+        )
+        
+        # 3. Calculate Stroke Totals for the whole engine
+        # Note: Using the single cylinder sum * NUM_CYL is equivalent and faster
+        pumping_work = (np.sum(w_cyl[0:180]) + np.sum(w_cyl[540:720])) * c.NUM_CYL
+        compression  = np.sum(w_cyl[180:360]) * c.NUM_CYL
+        expansion    = np.sum(w_cyl[360:540]) * c.NUM_CYL
+    
+        # Gross and Net Indictaed Work
+        work_net_indicated   = np.sum(w_cyl) * c.NUM_CYL
+        work_gross_indicated = (np.sum(w_cyl[180:360]) + np.sum(w_cyl[360:540])) * c.NUM_CYL
         
         # if self.state.current_theta >= 719:
         #     print(
@@ -1216,12 +1292,12 @@ class EngineModel:
         #         f"net_indicated_work_j:{np.sum(work_deg):.2f} "
         #     )
         
-        return {
-            "work_pumping_j": pumping_in + pumping_ex,
-            "work_compression_j": compression,
-            "work_expansion_j": expansion,
-            "net_indicated_work_j": np.sum(work_deg),
-            "work_deg": work_deg
-        }
+        self.state.work_pumping_j = pumping_work
+        self.state.work_compression_j = compression
+        self.state.work_expansion_j = expansion
+        self.state.work_net_indicated_j = work_net_indicated
+        self.state.work_gross_indicated_j = work_gross_indicated
+        self.state.work_deg = engine_work_deg
+        
 
  

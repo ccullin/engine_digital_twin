@@ -3,18 +3,29 @@ import numpy as np
 from engine_model import EngineModel
 import constants as c
 
+from dataclasses import dataclass, field
+
+@dataclass(slots=True, frozen=False)
+class MockEcuOutput:
+    spark: bool = False
+    spark_timing: int = 350
+    afr_target: float = 14.7 * 0.88
+    target_rpm: float = 0.0
+    iacv_pos: float = 25
+    iacv_wot_equiv: float = 25 * 0.06
+    pid_P: float = 0.0
+    pid_I: float = 0.0
+    pid_D: float = 0.0
+    trapped_air_mass_kg: float = 0.0
+    ve_fraction: float = 0.0
+    injector_on: bool = False
+    injector_start: int = 0
+    injector_end: int = 170
+    fuel_cut_active: bool = False
+
+
 class TestEngineModelIntegration(unittest.TestCase):
-  
-    def setUp(self):
-        # self.engine = EngineModel(rpm=2000)
-        
-        self.ecu = {
-            "spark": False, "spark_timing": 350, "afr_target": 0.88 * 14.7,
-            "iacv_pos": 25, "iacv_wot_equiv": 25 * 0.06, "trapped_air_mass_kg": 0.0,
-            "ve_fraction": 0.0, "injector_on": False, "inject_start": 0.0, "inject_end": 170.0,
-            "fuel_cut_active": False,
-        }
-    
+      
     def fire_engine(self, rpm, tps, clt=c.COOLANT_START, wheel_load=0, cycles=3):
         def get_spark(rpm):
             """Provides a 'correct enough' spark for physics validation."""
@@ -28,12 +39,12 @@ class TestEngineModelIntegration(unittest.TestCase):
                 advance = 5 + slope * (rpm - 900)
                 return int(360 - advance)
     
+        ecu = MockEcuOutput()
         self.engine = EngineModel(rpm=rpm)
         self.engine.state.wheel_load = wheel_load
         self.engine.sensors.TPS_percent = tps
         self.engine.sensors.CLT_C = clt
-        ecu = self.ecu.copy()
-        target_afr = ecu['afr_target']
+        target_afr = ecu.afr_target
         
         # 1. Convert CC/MIN to KG/S (assuming gasoline density 0.74)
         flow_kg_s = (c.INJECTOR_FLOW_CC_PER_MIN / 60.0) * (0.74 / 1000.0)
@@ -58,20 +69,20 @@ class TestEngineModelIntegration(unittest.TestCase):
                         
                         # 3. Set Variable Start based on Fixed End
                         # Example: Injector End is fixed at 170 CAD (standard for many port setups)
-                        ecu['inject_start'] = ecu['inject_end'] - pw_degrees
+                        ecu.injector_start = ecu.injector_end - pw_degrees
 
                 # 4. Set ECU Outputs
-                ecu['spark_timing'] = get_spark(rpm=rpm)
-                ecu["spark"] = (CAD == ecu['spark_timing'])
+                ecu.spark_timing = get_spark(rpm=rpm)
+                ecu.spark = (CAD == ecu.spark)
                 
                 # Handle pulse-width wrap-around (if start is negative or across 720)
-                start_trigger = ecu['inject_start'] % 720
-                end_trigger = ecu['inject_end'] % 720
+                start_trigger = ecu.injector_start % 720
+                end_trigger = ecu.injector_end % 720
                 
                 if start_trigger > end_trigger: # Pulse crosses 720/0 boundary
-                    ecu["injector_on"] = (CAD >= start_trigger or CAD <= end_trigger)
+                    ecu.injector_on = (CAD >= start_trigger or CAD <= end_trigger)
                 else:
-                    ecu["injector_on"] = (start_trigger <= CAD <= end_trigger)
+                    ecu.injector_on = (start_trigger <= CAD <= end_trigger)
 
                 self.engine.step(ecu)
 
@@ -155,12 +166,13 @@ class TestEngineModelIntegration(unittest.TestCase):
     def test_motoring_parasitic_drag(self):
         
         # cycle motoring engine
+        ecu = MockEcuOutput()
         self.engine = EngineModel(rpm=3000)
         self.engine.motoring_rpm = 3000
         self.engine.sensors.TPS_percent = 100.0
         self.engine.sensors.CLT_C = 90.0  # Warm engine
         for _ in range(3 * 720):
-            self.engine.step(self.ecu)
+            self.engine.step(ecu)
              
         # The torque the dyno HAD to provide to stay at 3000 RPM
         # This is the "Torque the crank needs to overcome"
@@ -172,19 +184,19 @@ class TestEngineModelIntegration(unittest.TestCase):
         j_to_nm = 1.0 / (4 * np.pi)
         
         # Gas Exchange Diagnostic
-        w_pumping = self.engine.engine_data_dict["work_pumping_j"]
-        pumping_torque_nm = w_pumping * j_to_nm * c.NUM_CYL  # pumping_torque is per cylinder while avg_dyno is for the engine
+        w_pumping = self.engine.state.work_pumping_j
+        pumping_torque_nm = w_pumping * j_to_nm
         pmep_bar = (abs(w_pumping) / self.engine.cyl.V_displaced) / 1e5
         
         # Mechanical/Thermal Remainder
         mech_thermal_drag = total_drag - pumping_torque_nm
         
         # check work done.
-        t_compression_nm =     self.engine.engine_data_dict["work_compression_j"] * j_to_nm * c.NUM_CYL
-        t_expansion_nm =       self.engine.engine_data_dict["work_expansion_j"] * j_to_nm * c.NUM_CYL
-        t_friction_nm =        self.engine.engine_data_dict["friction_work_j"] * j_to_nm
-        t_indicated_nm =       self.engine.engine_data_dict["indicated_work_j"] * j_to_nm
-        t_brake_nm =           self.engine.engine_data_dict["net_work_j"] * j_to_nm
+        t_compression_nm =     self.engine.state.work_compression_j * j_to_nm 
+        t_expansion_nm =       self.engine.state.work_expansion_j * j_to_nm
+        t_friction_nm =        self.engine.state.friction_work_j * j_to_nm
+        t_indicated_nm =       self.engine.state.indicated_work_j * j_to_nm
+        t_brake_nm =           self.engine.state.net_work_j * j_to_nm
         
         t_indicated_calc = pumping_torque_nm + t_compression_nm + t_expansion_nm
         t_brake_calc = t_indicated_nm - t_friction_nm
@@ -218,7 +230,7 @@ class TestEngineModelIntegration(unittest.TestCase):
 
             
         # 3. Collect Data
-        w_fric_wot = self.engine.engine_data_dict["friction_work_j"]
+        w_fric_wot = self.engine.state.friction_work_j
         t_fric_wot = w_fric_wot / (4 * np.pi)
         
         # Peak Cylinder Pressure (for context)
@@ -256,12 +268,13 @@ class TestEngineModelIntegration(unittest.TestCase):
         First Principles Audit: Validates Geometric CR and Polytropic Compression.
         """
         # Motor engine at low speed (1000 RPM) to minimize high-speed dynamic effects
+        ecu = MockEcuOutput()
         self.engine = EngineModel(rpm=1000)
         self.engine.motoring_rpm = 1000
         self.engine.sensors.TPS_percent = 100.0 # WOT to ensure full cylinder filling
         
         for _ in range(3 * 720):
-            self.engine.step(self.ecu)
+            self.engine.step(ecu)
             
         # 1. Capture Peak Motoring Pressure
         p_max_pa = np.max(self.engine.cyl.log_P)

@@ -6,13 +6,34 @@
 
 
 import sys
-from engine_model import FixedKeyDictionary
 import constants as c
 import numpy as np
 from efi_tables import EFITables
 
 # REQUIRED: Import necessary for 2D map interpolation (Spark/AFR tables)
 from scipy.interpolate import RegularGridInterpolator
+
+from dataclasses import dataclass
+
+
+@dataclass(slots=True, frozen=False)
+class EcuOutput:
+    spark: bool = False
+    spark_timing: int = 0
+    afr_target: float = 14.7
+    target_rpm: float = 0.0
+    iacv_pos: float = 0.0
+    iacv_wot_equiv: float = 0.0
+    pid_P: float = 0.0
+    pid_I: float = 0.0
+    pid_D: float = 0.0
+    trapped_air_mass_kg: float = 0.0
+    ve_fraction: float = 0.0
+    injector_on: bool = False
+    injector_start_deg: int = 0
+    injector_end_deg: int = 0
+    fuel_cut_active: bool = False
+
 
 
 class ECUController:
@@ -28,6 +49,9 @@ class ECUController:
         rl_idle_mode:       If True, bypasses internal PID and uses external_idle_command
         rl_ecu_spark_mode:  If True, bypasses spark table lookup and uses external_spark_advance
         """
+        
+        self.outputs = EcuOutput()
+        
         self.rl_idle_mode = rl_idle_mode
         self.rl_ecu_spark_mode = rl_ecu_spark_mode
 
@@ -91,51 +115,48 @@ class ECUController:
         self.filtered_map = 35.0
         
 
-        self.output_dict = FixedKeyDictionary(
-            {
-                "spark": self.spark_active,
-                "spark_timing": int(self.spark_advance_btdc),
-                "afr_target": self.afr_target,
-                "target_rpm": self.idle_target_rpm,
-                "iacv_pos": self.idle_valve_position,
-                "iacv_wot_equiv": self.iacv_wot_equiv,
-                "pid_P": self.pid_P,
-                "pid_I" : self.pid_I,
-                "pid_D": self.pid_D,
-                "trapped_air_mass_kg": self.trapped_air_mass_kg,
-                "ve_fraction": self.ve_fraction,
-                "injector_on": self.injector_is_active,
-                'injector_start_deg'   : int(self.injector_start_timing_degree),
-                'injector_end_deg'     : int(self.injector_end_timing_degree),
-                "fuel_cut_active": self.fuel_cut_active,
-            }
-        )
+        # self.output_dict = FixedKeyDictionary(
+        #     {
+        #         "spark": self.spark_active,
+        #         "spark_timing": int(self.spark_advance_btdc),
+        #         "afr_target": self.afr_target,
+        #         "target_rpm": self.idle_target_rpm,
+        #         "iacv_pos": self.idle_valve_position,
+        #         "iacv_wot_equiv": self.iacv_wot_equiv,
+        #         "pid_P": self.pid_P,
+        #         "pid_I" : self.pid_I,
+        #         "pid_D": self.pid_D,
+        #         "trapped_air_mass_kg": self.trapped_air_mass_kg,
+        #         "ve_fraction": self.ve_fraction,
+        #         "injector_on": self.injector_is_active,
+        #         'injector_start_deg'   : int(self.injector_start_timing_degree),
+        #         'injector_end_deg'     : int(self.injector_end_timing_degree),
+        #         "fuel_cut_active": self.fuel_cut_active,
+        #     }
+        # )
         
 
 
     # -----------------------------------------------------------------------------------------
     def get_outputs(self):
-        self.output_dict.update(
-            {
-                "spark": self.spark_active,
-                "spark_timing": int(self.spark_advance_btdc),
-                "afr_target": self.afr_target,
-                "target_rpm": self.idle_target_rpm,
-                "iacv_pos": self.idle_valve_position,
-                "iacv_wot_equiv": self.iacv_wot_equiv,
-                "pid_P": self.pid_P,
-                "pid_I" : self.pid_I,
-                "pid_D": self.pid_D,
-                "trapped_air_mass_kg": self.trapped_air_mass_kg,
-                "ve_fraction": self.ve_fraction,
-                "injector_on": self.injector_is_active,
-                'injector_start_deg'   : int(self.injector_start_timing_degree),
-                'injector_end_deg'     : int(self.injector_end_timing_degree),
-                "fuel_cut_active": self.fuel_cut_active,
-            }
-        )
 
-        return self.output_dict
+        self.outputs.spark = self.spark_active
+        self.outputs.spark_timing = int(self.spark_advance_btdc)
+        self.outputs.afr_target = self.afr_target
+        self.outputs.target_rpm = self.idle_target_rpm
+        self.outputs.iacv_pos = self.idle_valve_position
+        self.outputs.iacv_wot_equiv = self.iacv_wot_equiv
+        self.outputs.pid_P = self.pid_P
+        self.outputs.pid_I = self.pid_I
+        self.outputs.pid_D = self.pid_D
+        self.outputs.trapped_air_mass_kg = self.trapped_air_mass_kg
+        self.outputs.ve_fraction = self.ve_fraction
+        self.outputs.injector_on = self.injector_is_active
+        self.outputs.injector_start_deg = int(self.injector_start_timing_degree)
+        self.outputs.injector_end_deg = int(self.injector_end_timing_degree)
+        self.outputs.fuel_cut_active = self.fuel_cut_active
+
+        return self.outputs
 
     # -----------------------------------------------------------------------------------------
     def update(self, sensors):

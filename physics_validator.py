@@ -2,6 +2,26 @@ import numpy as np
 import constants as c
 import physics_functions as pf
 from engine_model import EngineModel
+from dataclasses import dataclass, field
+
+@dataclass(slots=True, frozen=False)
+class MockEcuOutput:
+    spark: bool = False
+    spark_timing: int = 350
+    afr_target: float = 14.7 * 0.88
+    target_rpm: float = 0.0
+    iacv_pos: float = 25
+    iacv_wot_equiv: float = 25 * 0.06
+    pid_P: float = 0.0
+    pid_I: float = 0.0
+    pid_D: float = 0.0
+    trapped_air_mass_kg: float = 0.0
+    ve_fraction: float = 0.0
+    injector_on: bool = False
+    injector_start: int = 0
+    injector_end: int = 170
+    fuel_cut_active: bool = False
+
 
 class PhysicsValidator:
     def __init__(self, cycles):
@@ -21,20 +41,7 @@ class PhysicsValidator:
             "net_torque_at_peak_load": 174.0,
             "combustion_max_temp": 2800.0,
         }
-        
-        # self.ecu = {
-        #     "spark": False, "spark_timing": 0.0, "afr_target": 14.7,
-        #     "iacv_pos": 25.0, "iacv_wot_equiv": 1.5, "trapped_air_mass_kg": 0.0,
-        #     "ve_fraction": 0.0, "injector_on": False, "fuel_cut_active": False,
-        # }
-        
-        self.ecu = {
-            "spark": False, "spark_timing": 350, "afr_target": 0.88 * 14.7,
-            "iacv_pos": 25, "iacv_wot_equiv": 25 * 0.06, "trapped_air_mass_kg": 0.0,
-            "ve_fraction": 0.0, "injector_on": False, "inject_start": 0.0, "inject_end": 170.0,
-            "fuel_cut_active": False,
-        }
-        
+                
 
     
     def fire_engine(self, rpm, tps, clt=c.COOLANT_START, wheel_load=0, cycles=3):
@@ -60,8 +67,8 @@ class PhysicsValidator:
         self.engine.state.wheel_load = wheel_load
         self.engine.sensors.TPS_percent = tps
         self.engine.sensors.CLT_C = clt
-        ecu = self.ecu.copy()
-        target_afr = ecu['afr_target']
+        ecu = MockEcuOutput()
+        target_afr = ecu.afr_target
         
         # 1. Convert CC/MIN to KG/S (assuming gasoline density 0.74)
         flow_kg_s = (c.INJECTOR_FLOW_CC_PER_MIN / 60.0) * (0.74 / 1000.0)
@@ -86,20 +93,20 @@ class PhysicsValidator:
                         
                         # 3. Set Variable Start based on Fixed End
                         # Example: Injector End is fixed at 170 CAD (standard for many port setups)
-                        ecu['inject_start'] = ecu['inject_end'] - pw_degrees
+                        ecu.injector_start = ecu.injector_end - pw_degrees
 
                 # 4. Set ECU Outputs
-                ecu['spark_timing'] = get_spark(rpm=rpm)
-                ecu["spark"] = (CAD == ecu['spark_timing'])
+                ecu.spark_timing = get_spark(rpm=rpm)
+                ecu.spark = (CAD == ecu.spark_timing)
                 
                 # Handle pulse-width wrap-around (if start is negative or across 720)
-                start_trigger = ecu['inject_start'] % 720
-                end_trigger = ecu['inject_end'] % 720
+                start_trigger = ecu.injector_start % 720
+                end_trigger = ecu.injector_end % 720
                 
                 if start_trigger > end_trigger: # Pulse crosses 720/0 boundary
-                    ecu["injector_on"] = (CAD >= start_trigger or CAD <= end_trigger)
+                    ecu.injector_on = (CAD >= start_trigger or CAD <= end_trigger)
                 else:
-                    ecu["injector_on"] = (start_trigger <= CAD <= end_trigger)
+                    ecu.injector_on = (start_trigger <= CAD <= end_trigger)
 
                 self.engine.step(ecu)
         return ecu
@@ -227,15 +234,15 @@ class PhysicsValidator:
 
     def _test_idle_vacuum(self, rpm):
         """Runs the engine at idle speeds to check manifold pressure (MAP)."""
-        ecu = self.ecu.copy()
+        ecu = MockEcuOutput()
         self.engine.sensors.TPS_percent = 0.0 # ecu has iacv bypass
         self.engine.sensors.rpm = rpm
         
         map_samples = np.zeros(720) 
         for _ in range(self.cycles * 720):
             CAD = _ % 720
-            ecu["spark"] = (CAD == ecu['spark_timing'])
-            ecu["injector_on"] = (ecu['inject_start'] <= CAD <= ecu['inject_end'])      
+            ecu.spark = (CAD == ecu.spark_timing)
+            ecu.injector_on = (ecu.injector_start <= CAD <= ecu.injector_end)      
             self.engine.step(ecu)
             map_samples[CAD] = self.engine.sensors.MAP_kPa
             
@@ -307,12 +314,13 @@ class PhysicsValidator:
     def generate_sync_report(self):
         """Generates a detailed thermodynamic payload to synchronize development."""
         # put the engine into known state
+        ecu = MockEcuOutput()
         self.engine = EngineModel(rpm=3000)
         self.engine.sensors.TPS_percent = 100
         
         for _ in range ( 5 * 720):
             self.engine.sensors.rpm = 3000
-            self.engine.step(self.ecu)
+            self.engine.step(ecu)
             
         # Capture a 720-degree snapshot from the last cycle
         p_work = self.engine.cyl.log_P * self.engine.cyl.dV_list
