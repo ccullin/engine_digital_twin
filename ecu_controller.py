@@ -446,7 +446,7 @@ class ECUController:
         else:
             # If driver is on the throttle, the IACV usually holds a 
             # "dashpot" position to prevent stalling when they lift off.
-            iacv_pos = 25 # Fixed small bypass (1.5% WOT)
+            iacv_pos = 32 # Fixed small bypass (1.5% WOT)
             
         return iacv_pos  
 

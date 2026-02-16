@@ -400,6 +400,11 @@ class MotoringStrategy(BaseStrategy):
             self.power_line,  = plot1.plot([], [], color='red', linewidth=2, label='Expansion', ls='dashed')
             self.exh_line,    = plot1.plot([], [], color='orange', linewidth=2, label='Exhaust')
             plot1.legend(loc='upper right', fontsize='x-small')
+            
+            # During Plot Initialization
+            self.poly_text = plot1.text(0.05, 0.95, '', transform=plot1.transAxes, 
+                            verticalalignment='top', fontsize=10, 
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
 
             # --- Plot 2 (Work vs. Theta) ---
             plot2.clear()
@@ -460,20 +465,53 @@ class MotoringStrategy(BaseStrategy):
             v_liters = log_v * 1000.0
             p_bar = log_p / 1e5
             
+            log10_p = np.log10(log_p)  # Use raw Pa for the log calculation
+            log10_v = np.log10(log_v)  # Use raw m^3 for the log calculation
+            
             # --- 1. Update P-V Loop (Top Right) ---
             idx_intake = (log_cad < 180)
             idx_comp   = (log_cad >= 180) & (log_cad < 360)
             idx_power  = (log_cad >= 360) & (log_cad < 540)
             idx_exh    = (log_cad >= 540)
 
-            self.intake_line.set_data(v_liters[idx_intake], p_bar[idx_intake])
-            self.comp_line.set_data(v_liters[idx_comp], p_bar[idx_comp])
-            self.power_line.set_data(v_liters[idx_power], p_bar[idx_power])
-            self.exh_line.set_data(v_liters[idx_exh], p_bar[idx_exh])
+            # self.intake_line.set_data(v_liters[idx_intake], p_bar[idx_intake])
+            # self.comp_line.set_data(v_liters[idx_comp], p_bar[idx_comp])
+            # self.power_line.set_data(v_liters[idx_power], p_bar[idx_power])
+            # self.exh_line.set_data(v_liters[idx_exh], p_bar[idx_exh])
             
-            plot1.set_xlim(np.min(v_liters) * 0.9, np.max(v_liters) * 1.1)
-            # plot1.set_ylim(-0.5, 4)
-            plot1.set_ylim(-0.5, max(15, np.max(p_bar) * 1.1))
+            # plot1.set_xlim(np.min(v_liters) * 0.9, np.max(v_liters) * 1.1)
+            # plot1.set_ylim(-0.5, max(15, np.max(p_bar) * 1.1))
+            
+            # Update Lines with Log Data
+            self.intake_line.set_data(log10_v[idx_intake], log10_p[idx_intake])
+            self.comp_line.set_data(log10_v[idx_comp], log10_p[idx_comp])
+            self.power_line.set_data(log10_v[idx_power], log10_p[idx_power])
+            self.exh_line.set_data(log10_v[idx_exh], log10_p[idx_exh])
+            
+            # Adjust Axis Limits for Log Scale
+            # Since these are logs, the ranges will be small (e.g., -4 to -3 for Volume)
+            plot1.set_xlim(np.min(log10_v) - 0.1, np.max(log10_v) + 0.1)
+            plot1.set_ylim(np.min(log10_p) - 0.1, np.max(log10_p) + 0.1)
+            
+            # Labels (Important to remind you it's a Log plot)
+            plot1.set_xlabel("log10(Volume [m^3])")
+            plot1.set_ylabel("log10(Pressure [Pa])")
+            
+            # Overlay slope text
+            mask = (log_cad >= 200) & (log_cad <= 320)
+            if np.any(mask):
+                # Linear fit: log10(P) = -n * log10(V) + C
+                # Note: polyfit returns [slope, intercept]
+                n_comp, _ = np.polyfit(log10_v[mask], log10_p[mask], 1)
+                
+                # In the P*V^n = C relation, slope = -n. 
+                # So we take the negative of the slope.
+                n_value = -n_comp
+                
+                # Clear previous text if you've stored a reference, 
+                # otherwise use a static coordinate in the plot.
+                # Placing it in the top-right of the subplot (Log P-V)
+                self.poly_text.set_text(f'n (comp): {n_value:.3f}')
 
             # --- 2. Update Work vs Theta (Bottom Left) ---
             self.work_trace.set_data(log_cad, work_array)
@@ -488,7 +526,7 @@ class MotoringStrategy(BaseStrategy):
         # --- Valve and Pressure charts
         area_int_vec = engine_data.valves.intake_area_table 
         area_exh_vec = engine_data.valves.exhaust_area_table
-        lift_int_vec = engine_data.valves.exhaust_lift_table
+        lift_int_vec = engine_data.valves.intake_lift_table
         lift_exh_vec = engine_data.valves.exhaust_lift_table
         theta_vec = engine_data.theta_list
         Cd_i_vec = engine_data.cyl.Cd_in_history
@@ -508,7 +546,7 @@ class MotoringStrategy(BaseStrategy):
         if Cd_i_vec is not None and Cd_e_vec is not None:
             self.Cd_i_line.set_data(theta_vec, Cd_i_vec)
             self.Cd_e_line.set_data(theta_vec, Cd_e_vec)
-            self.ax_Cd.set_ylim(0, max(np.max(Cd_i_vec), np.max(Cd_e_vec)) * 1.1)
+            self.ax_Cd.set_ylim(0.5, max(np.max(Cd_i_vec), np.max(Cd_e_vec)) * 1.5)
             
             # Calculate the points
             ivo_1mm, ivc_1mm = self.get_lift_timing(theta_vec, lift_int_vec, threshold=1.0) # 0.001m = 1mm
@@ -518,7 +556,11 @@ class MotoringStrategy(BaseStrategy):
             timing_str = (
                 f"1mm Timing:\n"
                 f"IVO: {ivo_1mm:3.0f}°  IVC: {ivc_1mm:3.0f}°\n"
-                f"EVO: {evo_1mm:3.0f}°  EVC: {evc_1mm:3.0f}°"
+                f"EVO: {evo_1mm:3.0f}°  EVC: {evc_1mm:3.0f}°\n"
+                "\n"
+                f"0mm Timing:\n"
+                f"IVO: {engine_data.valves.intake.open_angle:3.0f}°  IVC: {engine_data.valves.intake.close_angle:3.0f}°\n"
+                f"EVO: {engine_data.valves.exhaust.open_angle:3.0f}°  EVC: {engine_data.valves.exhaust.close_angle:3.0f}°"
             )
 
             # Use coordinate transform 'axes fraction' so (0,0) is bottom-left and (1,1) is top-right
@@ -556,29 +598,67 @@ class MotoringStrategy(BaseStrategy):
         # === Energy Audit Overlay (Bottom Left Table) ===
         net_work = engine_data.state.net_work_j
         fric_work = engine_data.state.friction_work_j
-        total_balance = net_work + fric_work
+        # total_balance = net_work + fric_work
 
+        # lines = [
+        #     # f"MOTORING CYCLE: {current_cycle:8.0f}",
+        #     # f"RPM:            {sensors.rpm:8.1f}",
+        #     # "----------------------------",
+        #     # f"dm_in Total:  {np.sum(engine_data['dm_in']):8.4f} kg",
+        #     # f"dm_out Total: {np.sum(engine_data['dm_out']):8.4f} kg",
+        #     # f"dm Flow Var:  {np.std(engine_data['dm_in']):8.6f}", # High variance = oscillation
+        #     # "----------------------------",
+        #     f"T_ind_avg:      {np.average(engine_data.state.torque_indicated_history):8.1f} Nm",
+        #     f"T_fric_avg:     {np.average(engine_data.state.torque_friction_history):8.1f} Nm",
+        #     f"T_brake_avg:    {np.average(engine_data.state.torque_brake_history):8.1f} Nm",
+        #     "----------------------------",
+        #     f"Peak Press:     {engine_data.cyl.P_peak_bar:8.2f} Bar",
+        #     f"P_peak_angle:      {engine_data.cyl.P_peak_angle:3.0f}",
+        #     "",
+        #     "ENERGY AUDIT (Joules):",
+        #     f"Compression:    {engine_data.state.work_compression_j:8.1f} J",
+        #     f"Expansion:      {engine_data.state.work_expansion_j:+8.1f} J",
+        #     f"Pumping Loss:   {engine_data.state.work_pumping_j:8.1f} J",
+        #     f"Friction Loss:  {fric_work:8.1f} J",
+        #     "----------------------------",
+        #     f"Brake Work:    {net_work:+8.1f} J",
+        # ]
+        
+        # --- Additional Calculations ---
+        # V_disp_m3 = 0.0021 / 4  # Displacement per cylinder for 2.1L 4-cyl
+        V_disp_m3 = c.V_DISPLACED
+        rho_air = c.P_ATM_PA / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
+        # rho_air = 1.225         # Standard air density (or use your ambient model)
+        mass_ideal = V_disp_m3 * rho_air
+        # trapped_mass should be captured at IVC in your cycle update        
+        vol_eff = (engine_data.cyl.air_mass_at_IVC / mass_ideal) * 100 
+        print(f"DEBUG motoring: vol_eff:{vol_eff} air_mass:{engine_data.cyl.air_mass_kg}  mass_ideal:{mass_ideal}")
+
+        # Mean Effective Pressures (in Bar)
+        imep_net = (engine_data.state.work_compression_j + engine_data.state.work_expansion_j) / V_disp_m3 / 1e5
+        pmep = engine_data.state.work_pumping_j / V_disp_m3 / 1e5
+
+        # --- Updated Table Lines ---
         lines = [
-            # f"MOTORING CYCLE: {current_cycle:8.0f}",
-            # f"RPM:            {sensors.rpm:8.1f}",
-            # "----------------------------",
-            # f"dm_in Total:  {np.sum(engine_data['dm_in']):8.4f} kg",
-            # f"dm_out Total: {np.sum(engine_data['dm_out']):8.4f} kg",
-            # f"dm Flow Var:  {np.std(engine_data['dm_in']):8.6f}", # High variance = oscillation
-            # "----------------------------",
-            f"T_ind_avg:      {np.average(engine_data.state.torque_indicated_history):8.1f} Nm",
-            f"T_fric_avg:     {np.average(engine_data.state.torque_friction_history):8.1f} Nm",
-            f"T_brake_avg:    {np.average(engine_data.state.torque_brake_history):8.1f} Nm",
+            # --- Performance & Efficiency ---
+            f"Vol. Efficiency: {vol_eff:8.1f} %",        # NEW: Compliments Valve/Gas Exchange plots
+            f"Polytropic n:    {n_value:8.3f}",         # NEW: Compliments Log PV plot
+            f"Net IMEP:        {imep_net:8.2f} Bar",    # NEW: Standardizes Work to pressure
             "----------------------------",
-            f"Peak Press:     {engine_data.cyl.P_peak_bar:8.2f} Bar",
-            f"P_peak_angle:      {engine_data.cyl.P_peak_angle:3.0f}",
-            "",
-            "ENERGY AUDIT (Joules):",
-            f"Compression:    {engine_data.state.work_compression_j:8.1f} J",
-            f"Expansion:      {engine_data.state.work_expansion_j:+8.1f} J",
-            f"Pumping Loss:   {engine_data.state.work_pumping_j:8.1f} J",
-            f"Friction Loss:  {fric_work:8.1f} J",
+            
+            # --- Mechanical Limits (KEEP THESE) ---
+            f"Peak Press:     {engine_data.cyl.P_peak_bar:8.2f} Bar", # Critical for head gasket/conrod limits
+            f"P_peak_angle:   {engine_data.cyl.P_peak_angle:8.0f} ATDC", # Validates phasing
+            f"T_fric_avg:     {np.average(engine_data.state.torque_friction_history):8.1f} Nm", # Validates oil/bearing model
             "----------------------------",
+            
+            # --- Energy Audit (KEEP THESE) ---
+            f"Pumping Loss:   {engine_data.state.work_pumping_j:8.1f} J",  # Cost of "breathing"
+            f"Friction Loss:  {fric_work:8.1f} J",                         # Cost of "moving"
+            f"Cycle Heat Loss:{abs(engine_data.state.work_compression_j) - engine_data.state.work_expansion_j:8.1f} J", # NEW: The "Log PV gap"
+            "----------------------------",
+            
+            # --- Final Output ---
             f"Brake Work:    {net_work:+8.1f} J",
         ]
         

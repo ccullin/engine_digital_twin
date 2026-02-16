@@ -8,7 +8,7 @@ STROKE = 0.076  # m
 LEN_CONROD = 0.143  # m
 RADIUS_CRANK = STROKE / 2.0  # m
 A_PISTON = np.pi * (BORE / 2.0) ** 2  # m²
-COMP_RATIO = 9
+COMP_RATIO = 9.0
 V_DISPLACED = A_PISTON * STROKE  # m³ per cylinder
 NUM_CYL = 4
 
@@ -58,20 +58,75 @@ NUM_CYL = 4
 
 
 #set at 1mm height
+# VALVE_TIMING = {
+#     'intake': {
+#         'cam_open':       6,  # 684
+#         'cam_close':      211,  # 210
+#         'max_lift':   8.9,  # needs to allow for hydralic lift compression)
+#         'diameter':  40.0   # 40 mm
+#     },
+#     'exhaust': {
+#         'cam_open':       507,  # 460 matches factory spec allowing for cam ramp
+#         'cam_close':      702,  # 35   30 matches factory spec allowing for cam ramp
+#         'max_lift':   8.9,  # needs to allow for hydralic lift compression)
+#         'diameter':    34   # 34 mm # DEBUGGING WORKED AT 36 with 10mm lift
+#     }
+# }
+
+""" using:
+IVO: 716 (4 BTDC)
+IVC: 220 (40 ABDC) (duration=224, centreline at 108)
+EVO: 500 (40 BBDC)
+EVC:   4 ( 4 ATDC) (duration=224, centreline at 612)
+measured at 1mm
+"""
 VALVE_TIMING = {
     'intake': {
-        'open':       15,  # 684
-        'close':      202,  # 210
-        'max_lift':   9.0,  # needs to allow for hydralic lift compression)
-        'diameter':  40.0   # 40 mm
+        'open_1mm':    716,  
+        'close_1mm':   220,
+        'max_lift':      8,  
+        'diameter':     40.0   
     },
     'exhaust': {
-        'open':       517,  # 460 matches factory spec allowing for cam ramp
-        'close':       692,  # 35   30 matches factory spec allowing for cam ramp
-        'max_lift':   9.0,  # needs to allow for hydralic lift compression)
-        'diameter':    34   # 34 mm # DEBUGGING WORKED AT 36 with 10mm lift
+        'open_1mm':    500,  
+        'close_1mm':     4, 
+        'max_lift':      9,  
+        'diameter':     34.0   
     }
 }
+
+
+# =================================== FUEL INJECTOR and SPARK DATA ========================
+INTAKE_DURATION_1mm  = 224.0 # degrees advertised.  at 1mm
+EXHAUST_DURATION_1mm = 230
+CENTERLINE           = 108.0    # degrees ATDC
+INTAKE_MAX_LIFT      = 8 # mm
+EXHAUST_MAX_LIFT     = 9 # mm
+# DURATION             = 224.0 # degrees advertised.  seat to seat
+
+# LOBE_SPERATION       = 108.0    # degrees
+# ROCKER_RATIO         = 1.1      # factory ratio
+
+# FOLLOWER_DIAM        = 24.0     # mm
+# BASE_CIRCLE          = 34.0     # mm
+
+
+
+#set at 1mm height
+# VALVE_TIMING = {
+#     'intake': {
+#         'open_1mm':   710,  # @ 1mm lift
+#         'close_1mm':  228,  # @ 1mm lift
+#         'max_lift':      9.0,  # needs to allow for hydralic lift compression)
+#         'diameter':     40.0   # 40 mm
+#     },
+#     'exhaust': {
+#         'open_1mm':   490,  # @ 1mm lift
+#         'close_1mm':    0,  # @ 1mm lift
+#         'max_lift':      9.0,  # needs to allow for hydralic lift compression)
+#         'diameter':     34.0   # 34 mm # DEBUGGING WORKED AT 36 with 10mm lift
+#     }
+# }
 
 
 # =================================== FUEL INJECTOR and SPARK DATA ========================
@@ -84,7 +139,7 @@ BURN_DURATION_DEG = 50.0
 # =================================== ENVIRONMENT & INITIAL CONDITIONS ==========
 P_ATM_PA = 101325.0  # at sea level (Pa)
 T_AMBIENT = 293.0  # K (20°C)
-T_INTAKE_K = 308.0  # K (35°C)
+T_INTAKE_K = 293.0  # K
 T_EXHAUST_K = 900.0
 COOLANT_START = 20.0
 CRANK_RPM = 250.0
@@ -94,7 +149,7 @@ T_FUEL_K = T_AMBIENT
 
 # =================================== RPM LIMITS ======================================
 IDLE_RPM = 900.0
-RPM_LIMIT = 6000
+RPM_LIMIT = 5600
 
 
 # M_GAS_INITIAL   = 1.2e-4        # kg (reasonable trapped mass at cold crank)
@@ -128,3 +183,8 @@ THETA_DELTA = 1.0
 # Wall heat transfer
 C_WALL = 2.0
 C_TURB = 0.0  # simplified
+
+# =================================== Engine Output targets ==============================
+MAX_TORQUE = 159 #Nm at 3200 rpm
+MAX_POWER = 67 # Kw at 4800 rpm
+

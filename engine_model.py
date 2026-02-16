@@ -31,7 +31,7 @@ class EngineSensors:
     cam_sync: bool = False
     ambient_pressure: float = c.P_ATM_PA
     rpm_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
-    #IAT ??
+    IAT_K: float = c.T_AMBIENT
     
     @property
     def MAP_kPa(self) -> float:
@@ -67,12 +67,14 @@ class CylinderState:
     log_T: np.ndarray = field(default_factory=lambda: np.full(720, c.T_AMBIENT))
     P_peak_bar: float = 0.0
     P_peak_angle: float = 0.0
-    T_wall: float = c.T_AMBIENT + 20   # adding buffer for start stability and speed
+    T_wall: float = c.T_AMBIENT + 20   # K.  adding buffer for start stability and speed
     
     # Thermodynamic tracking
     Q_loss_total: float = 0.0 # heat loss from ctl to cyl_wall
     Q_loss_step_sum: float = 0.0 # tracks sub-step total for engine data reporting
+    Q_loss_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
     Q_in_step_sum: float = 0.0 # tracks sub-step total for engine data reporting
+    Q_in_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
     
     # Flow State
     dm_total: float = 0.0 # Change in cylinder mass air_in - air_out + fuel
@@ -90,6 +92,10 @@ class CylinderState:
     dm_ex_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
     Cd_in_history:  np.ndarray = field(default_factory=lambda: np.zeros(720))
     Cd_ex_history:  np.ndarray = field(default_factory=lambda: np.zeros(720))
+    air_mass_at_IVC: float = 0.0
+    fuel_mass_at_IVC: float = 0.0
+    total_mass_at_IVC: float = 0.0
+    total_mass_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
     
     
     # Combustion State
@@ -125,30 +131,39 @@ class CylinderState:
         self.total_mass_kg = (self.P_curr * self.V_clearance) / (c.R_SPECIFIC_EXHAUST * self.T_curr)
         
 
-    
 @dataclass(slots=True, frozen=False)
 class Valve:
-    """stores valve geometry"""
-    open_angle: float
-    close_angle: float
+    """Stores valve geometry and timing."""
+    open_1mm: float # set in constants
+    close_1mm: float # set in constants
+    # open_angle: float = field(init=False) # The actual start of valve lift (0.0mm), calculated
+    # close_angle: float = field(init=False) # The actual end of vavle lift (0.0mm)
+    open_angle: float = field(init=False)
+    close_angle: float = field(init=False)
     max_lift: float
     diameter: float
-        
+
+
 @dataclass(slots=True, frozen=False)
 class Valves:
-    intake: Valve = field(default_factory=lambda: Valve(
-        c.VALVE_TIMING['intake']['open'] % 720,
-        c.VALVE_TIMING['intake']['close'] % 720,
-        c.VALVE_TIMING['intake']['max_lift'],
-        c.VALVE_TIMING['intake']['diameter']
-    ))
+    # Example using the VW WBX 2.1 MV Factory Specs
+    intake = Valve(
+        open_1mm=c.VALVE_TIMING['intake']['open_1mm'] % 720,
+        close_1mm=c.VALVE_TIMING['intake']['close_1mm'] % 720,
+        # open_angle=c.VALVE_TIMING['intake']['open'],
+        # close_angle=c.VALVE_TIMING['intake']['close'],
+        max_lift=c.VALVE_TIMING['intake']['max_lift'],
+        diameter=c.VALVE_TIMING['intake']['diameter']
+    )
     
-    exhaust: Valve = field(default_factory=lambda: Valve(
-        c.VALVE_TIMING['exhaust']['open'] % 720,
-        c.VALVE_TIMING['exhaust']['close'] % 720,
-        c.VALVE_TIMING['exhaust']['max_lift'],
-        c.VALVE_TIMING['exhaust']['diameter']
-    ))
+    exhaust = Valve(
+        open_1mm=c.VALVE_TIMING['exhaust']['open_1mm'] % 720,
+        close_1mm=c.VALVE_TIMING['exhaust']['close_1mm'] % 720,
+        # open_angle=c.VALVE_TIMING['exhaust']['open'],
+        # close_angle=c.VALVE_TIMING['exhaust']['close'],
+        max_lift=c.VALVE_TIMING['exhaust']['max_lift'],
+        diameter=c.VALVE_TIMING['exhaust']['diameter']
+    )
     
     # pre computed vectors
     intake_lift_table: np.ndarray = field(init=False, repr=False)
@@ -156,13 +171,137 @@ class Valves:
     exhaust_lift_table: np.ndarray = field(init=False, repr=False)
     exhaust_area_table: np.ndarray = field(init=False, repr=False)
     
+
+    # def align_valve_timing(self, lift_table, target_open, target_close, lift_threshold=1.0):
+    #     """
+    #     Shifts the lift table so that the lift_threshold (1mm) 
+    #     aligns with the desired target_open and target_close angles.
+    #     """
+    #     # 1. Find the current 1mm points in the unaligned table
+    #     # We use your existing find_valve_timing logic here
+    #     current_open, current_close = self.find_valve_timing(lift_table, epsilon=lift_threshold)
+        
+    #     if current_open is None:
+    #         return lift_table
+
+    #     # 2. Calculate the centerlines (Target vs. Current)
+    #     # Using modulo 720 to handle the wrap-around math safely
+    #     target_centerline = ((target_open + target_close) / 2) % 720
+        
+    #     # Handle cases where the duration crosses the 720/0 boundary
+    #     if target_open > target_close:
+    #         target_centerline = ((target_open + target_close + 720) / 2) % 720
+
+    #     current_centerline = ((current_open + current_close) / 2) % 720
+    #     if current_open > current_close:
+    #         current_centerline = ((current_open + current_close + 720) / 2) % 720
+
+    #     # 3. Calculate the required shift
+    #     shift = int(round(target_centerline - current_centerline))
+        
+    #     # 4. Roll the array to align
+    #     return np.roll(lift_table, shift)
+
+
+
+    def find_valve_timing(self, lift, epsilon=1e-5):
+        """
+        Finds actual IVO/IVC or EVO/EVC for 720-length arrays at 1 CAD resolution.
+        Handles wrap-around (e.g., IVO at 710, IVC at 211).
+        """
+        
+        # 1. Identify indices where the valve is physically above the target lift
+        active_idx = np.where(lift > epsilon)[0]
+        
+        if len(active_idx) == 0:
+            return None, None
+        
+        # 2. Identify the gap in indices
+        # np.diff calculates [idx[1]-idx[0], idx[2]-idx[1]...]
+        diffs = np.diff(active_idx)
+        
+        # In 1 CAD increments, diffs will be '1' for contiguous open degrees.
+        # The 'jump' occurs over the duration where the valve is CLOSED.
+        if len(diffs) > 0 and np.max(diffs) > 1:
+            # Wrap-around detected (Valve is open across the 719/0 boundary)
+            jump_pos = np.argmax(diffs)
+            
+            # The event STARTS after the jump (the higher index group)
+            # and ENDS before the jump (the lower index group)
+            idx_open = active_idx[jump_pos + 1]
+            idx_close = active_idx[jump_pos]
+        else:
+            # Standard case (Valve opens and closes within the 0-719 window)
+            idx_open = active_idx[0]
+            idx_close = active_idx[-1]
+            
+        return int(idx_open), int(idx_close)
+
+
+
     
+    # def __post_init__(self):
+    #     theta_range = np.arange(720)
+    #     # self.intake_lift_table = pf.calc_valve_lift_flat_follower(theta_range, self.intake) # mm
+    #     # self.intake_area_table = pf.calc_valve_area_vectorized(theta_range, self.intake, self.intake_lift_table) # m2      
+    #     # self.exhaust_lift_table = pf.calc_valve_lift_flat_follower(theta_range, self.exhaust) # mm
+    #     # self.exhaust_area_table = pf.calc_valve_area_vectorized(theta_range, self.exhaust, self.exhaust_lift_table) # m2
+        
+    #     # # record the actual valve open and close based on the flat cam follower
+    #     # self.intake.open_angle, self.intake.close_angle = self.find_valve_timing(self.intake, self.intake_lift_table)
+    #     # self.exhaust.open_angle, self.exhaust.close_angle = self.find_valve_timing(self.exhaust, self.exhaust_lift_table)
+        
+    #     # 1. Generate raw lift based on a generic "centered" assumption
+    #     raw_intake_lift = pf.calc_valve_lift_flat_follower(theta_range, self.intake.open_1mm, self.intake.close_1mm, self.intake.max_lift)
+    #     raw_exhaust_lift = pf.calc_valve_lift_flat_follower(theta_range, self.exhaust.open_1mm, self.exhaust.close_1mm, self.exhaust.max_lift)
+        
+    #     # 2. Shift it to match your 1mm constants (e.g., IVO 716, IVC 220)
+    #     self.intake_lift_table = self.align_valve_timing(raw_intake_lift, c.VALVE_TIMING['intake']['open_1mm'], c.VALVE_TIMING['intake']['close_1mm'])
+    #     self.exhaust_lift_table = self.align_valve_timing(raw_exhaust_lift, c.VALVE_TIMING['exhaust']['open_1mm'], c.VALVE_TIMING['exhaust']['close_1mm'])
+        
+    #     # 3. Now find the ACTUAL seat-to-seat timing for the simulation
+    #     self.intake.open_angle, self.intake.close_angle = self.find_valve_timing(self.intake_lift_table, epsilon=1e-5)
+    #     self.exhaust.open_angle, self.exhaust.close_angle = self.find_valve_timing(self.exhaust_lift_table, epsilon=1e-5)
+        
+    #     # 4. Generate area tables based on the shifted lift tables
+    #     self.intake_area_table = pf.calc_valve_area_vectorized(theta_range, self.intake, self.intake_lift_table) # m2      
+    #     self.exhaust_area_table = pf.calc_valve_area_vectorized(theta_range, self.exhaust, self.exhaust_lift_table) # m2
+ 
     def __post_init__(self):
         theta_range = np.arange(720)
-        self.intake_lift_table = pf.calc_valve_lift_vectorized(theta_range, self.intake) # mm
-        self.intake_area_table = pf.calc_valve_area_vectorized(theta_range, self.intake) # m2        
-        self.exhaust_lift_table = pf.calc_valve_lift_vectorized(theta_range, self.exhaust) # mm
-        self.exhaust_area_table = pf.calc_valve_area_vectorized(theta_range, self.exhaust) # m2
+        
+        # 1. Generate lift directly using the 1mm specs
+        # The function now handles the expansion to 0mm internally
+        self.intake_lift_table = pf.calculate_wbx_physical_lift(c.INTAKE_DURATION_1mm, c.CENTERLINE, c.INTAKE_MAX_LIFT, is_intake=True, is_duration_at_1mm=True)
+        self.exhaust_lift_table = pf.calculate_wbx_physical_lift(c.EXHAUST_DURATION_1mm, c.CENTERLINE, c.EXHAUST_MAX_LIFT, is_intake=False, is_duration_at_1mm=True)
+        
+        # for CAD in range(720):
+        #     print(f"CAD:{CAD} lift_i:{self.intake_lift_table[CAD]:.5f} lift_e:{self.exhaust_lift_table[CAD]:.5f}")
+        # self.intake_lift_table = pf.calc_valve_lift_flat_follower(
+        #     theta_range, self.intake.open_1mm, self.intake.close_1mm, self.intake.max_lift
+        # )
+        
+        # self.exhaust_lift_table = pf.calc_valve_lift_flat_follower(
+        #     theta_range, self.exhaust.open_1mm, self.exhaust.close_1mm, self.exhaust.max_lift
+        # )
+        
+        # 2. Extract the actual seat-to-seat timing for the dataclass records
+        self.intake.open_angle, self.intake.close_angle = self.find_valve_timing(
+            self.intake_lift_table, epsilon=1e-5
+        )
+        self.exhaust.open_angle, self.exhaust.close_angle = self.find_valve_timing(
+            self.exhaust_lift_table, epsilon=1e-5
+        )
+        
+        # 3. Calculate Area Tables
+        self.intake_area_table = pf.calc_valve_area_vectorized(theta_range, self.intake, self.intake_lift_table)
+        self.exhaust_area_table = pf.calc_valve_area_vectorized(theta_range, self.exhaust, self.exhaust_lift_table)    
+        
+        # print(f"DEBUG INTAKE VALVE: {self.intake}")
+        # print(f"DEBUG EXHAUST VALVE: {self.exhaust}")
+        # for CAD in range (720):
+        #     print(f"DEBUG: CAD{CAD} l_i:{self.intake_lift_table[CAD]:.5f}mm a_i:{self.intake_area_table[CAD]:.5f} "
+        #           f"l_e:{self.exhaust_lift_table[CAD]:.5f}mm a_e:{self.exhaust_area_table[CAD]:.5f}") 
         
  
         
@@ -265,7 +404,7 @@ class EngineModel:
         
         self.motoring_rpm = 0.0  # in motoring mode the driver strategy will set this for engine analysis.
         
-        # self.print_geom()
+        self.print_geom()
 
 
     def print_geom(self):
@@ -369,9 +508,10 @@ class EngineModel:
                 P_curr=P_curr, T_curr=T_curr, M_curr=self.cyl.total_mass_kg,
                 V_curr=V_curr, Delta_M=deltas["dm_tot"], 
                 Delta_Q_in=Q_in_sub, Delta_Q_loss=Q_loss_sub,
-                dV_d_theta=dV_d_theta, gamma=self.cyl.gamma_blend, 
+                dV_d_theta=dV_d_theta, 
+                R_spec_blended=self.cyl.R_specific_blend,
+                gamma_blended_start=self.cyl.gamma_blend, 
                 theta_delta=substep_size, T_manifold=deltas["T_inflow"], 
-                R_spec=self.cyl.R_specific_blend,
                 cycle=self._cycle_count, CAD=CAD, substep=substep
             )
             
@@ -438,6 +578,7 @@ class EngineModel:
         # update logs with the results of the final substep
         self.cyl.log_P[(CAD+1) %720] = P_next
         self.cyl.log_T[(CAD+1) %720] = T_next
+        self.cyl.total_mass_history[CAD] = self.cyl.total_mass_kg
         # self.cyl.log_V[CAD] = self.cyl.V_list[CAD]   
 
         # UPDATE INTAKE MANIFOLD PRESSURE (MAP SENSOR) 
@@ -452,7 +593,8 @@ class EngineModel:
         # update heat loss trackers for Engine Data reporting
         self.cyl.Q_in_step_sum = Q_in_step_sum
         self.cyl.Q_loss_step_sum = Q_loss_step_sum
-
+        self.cyl.Q_in_history[CAD] = Q_in_step_sum
+        self.cyl.Q_loss_history[CAD] = Q_loss_step_sum
         
         #  MECHANICAL DYNAMICS (Calculated once per degree using final state)
         # We use the full degree dV here because work is summed across the step
@@ -524,7 +666,16 @@ class EngineModel:
             mass_in += dm_f
             weighted_T += dm_f * c.T_FUEL_K
 
-        T_inflow = weighted_T / mass_in if mass_in > 1e-18 else self.cyl.T_curr
+        # T_inflow = weighted_T / mass_in if mass_in > 1e-18 else self.cyl.T_curr
+        T_inflow = weighted_T / mass_in if mass_in > 1e-18 else c.T_AMBIENT
+        
+        if dm_i > 1e-9:           
+            # Simple low-pass filter to emulate sensor lag and avoid 
+            # fluctuations from backflow/residual heat
+            alpha = 0.05 
+            self.sensors.IAT_K = (1 - alpha) * self.sensors.IAT_K + alpha * T_inflow
+        
+        # print(f"DEBUG T_INTAKE: CAD:{self.state.current_theta} T_inflow:{T_inflow} Weighted_T:{weighted_T} mass_in:{mass_in}")
 
         # 5. Return everything needed for the sub-step integration
         return {
@@ -565,8 +716,9 @@ class EngineModel:
         if spark_command and substep == 0 and not self.cyl.combustion_active:
             self.cyl.spark_event_theta = CAD
             
-            # Physical Delay: ~1.0ms is a standard SI kernel formation time
-            ign_delay = (self.sensors.rpm / 60.0) * 360.0 * 0.001
+            # REDUCE DELAY: 1.0ms is too long for a high-turbulence WBX at 4500 RPM.
+            # Try 0.2ms (roughly 5 degrees at 4500 RPM) to account for spark gap ionization.
+            ign_delay = (self.sensors.rpm / 60.0) * 360.0 * 0.0002
             self.cyl.ignition_start_theta = CAD + ign_delay
             
             self.cyl.combustion_active = True
@@ -598,7 +750,8 @@ class EngineModel:
             self.cyl.total_cycle_heat_J = theoretical_max_energy * combustion_efficiency
 
             self.cyl.burn_duration = pf.get_burn_duration(self.sensors.rpm, self.sensors.lambda_)
-            self.cyl.m_vibe = max(1.5, 2.5 - (self.sensors.rpm / 4000.0))
+            # self.cyl.m_vibe = max(1.5, 2.5 - (self.sensors.rpm / 4000.0))
+            self.cyl.m_vibe = max(2.5, 3.5 - (self.sensors.rpm / 4000.0))
 
         # 2. Execution Logic
         # Use precise theta to ensure we don't 'miss' the start due to substep alignment
@@ -726,6 +879,11 @@ class EngineModel:
             #       )
             self.temp_total_dm_f = 0.0
             
+        # if CAD == 0 and self.cyl.air_mass_at_IVC > 0.0:
+        #     print(f"Trapped air at Ex TDC:{self.cyl.air_mass_kg}Kg   % of IVC:{100 * self.cyl.air_mass_kg / self.cyl.air_mass_at_IVC}%")
+            
+
+            
         # elif CAD == self.valves.exhaust.open_angle: 
         #     print(f"  EVO θ:{CAD:3d} air_mass:{self.cyl.air_mass_kg:.2e} fuel_mass:{self.cyl.fuel_mass_kg:.2e} total_mass:{self.cyl.total_mass_kg:.2e} "
         #           f"T_cyl:{self.cyl.T:.0f}K ")
@@ -734,6 +892,26 @@ class EngineModel:
         if CAD >= 719.0:
             self._handle_cycle_end(ecu)
             self._cycle_count += 1
+            
+        if CAD == int(self.valves.intake.close_angle):
+            self.cyl.air_mass_at_IVC = self.cyl.air_mass_kg
+            self.cyl.fuel_mass_at_IVC = self.cyl.fuel_mass_kg
+            self.cyl.total_mass_at_IVC = self.cyl.total_mass_kg
+            
+        # if CAD == 372.0:
+        #     calculated_P = (self.cyl.total_mass_kg * self.cyl.R_specific_blend * self.cyl.T_curr) / self.cyl.V_list[CAD]
+        #     print(f"\n--- [State Probe at 372 CAD] ---")
+        #     print(f"Recorded P: {self.cyl.P_curr / 1e5:.2f} bar")
+        #     print(f"Calculated P (Ideal Gas Law): {calculated_P / 1e5:.2f} bar")
+        #     print(f"Current Temp: {self.cyl.T_curr:.1f} K")
+        #     print(f"Current R: {self.cyl.R_specific_blend:.2f} J/kgK")
+        #     print(f"Mass at IVC: air:{self.cyl.air_mass_at_IVC * 1e6:.3f} fuel:{self.cyl.fuel_mass_at_IVC * 1e6:.3f} total:{self.cyl.total_mass_at_IVC * 1e6:.3f} mg  IVC:{self.valves.intake.close_angle}")
+        #     print(f"Mass at SPARK: air:{self.cyl.air_mass_at_spark * 1e6:.3f} fuel:{self.cyl.fuel_mass_at_spark * 1e6:.3f} total:{self.cyl.total_mass_at_spark * 1e6:.3f} mg  spark:{self.cyl.spark_event_theta}")
+        #     print(f"total ")
+        #     print(f"Total Mass at 372: {self.cyl.total_mass_kg * 1e6:.3f} mg")
+            
+        # if CAD == self.valves.exhaust.close_angle:
+        #     print(f"Trapped air at EVC:{self.cyl.air_mass_kg}Kg")
 
         # elif CAD == self.valves.intake.close_angle: 
         #     print(f"  IVC θ:{CAD:3d} air_mass:{self.cyl.air_mass_kg:.2e} fuel_mass:{self.cyl.fuel_mass_kg:.2e} total_mass:{self.cyl.total_mass_kg:.2e} "
@@ -782,7 +960,10 @@ class EngineModel:
         else: 
             self.sensors.knock = False
             self.sensors.knock_intensity = 0.0
-        
+            
+        # update work done log
+        self._calculate_cycle_work()
+  
         # print(
         #     f"    DEBUG step end: CAD={self._cycle_count}/{CAD} "
         #     f"rpm:{self.sensors.rpm:.0f} P-peak:{peak_bar:.0f}bar P_peak_angle:{self.cyl.P_peak_angle:.0f} T_peak:{max(self.cyl.log_T):.0f}K "
@@ -901,10 +1082,10 @@ class EngineModel:
         #     print(
         #         f"DEBUG WORK: cyc:{self._cycle_count:.0f} "
         #         f"rpm_avg:{np.mean(self.sensors.rpm_history):.0f} "
-        #         f"work_pumping_j:{pumping_in + pumping_ex:.2f} "
+        #         f"work_pumping_j:{pumping_work:.2f} "
         #         f"work_compression_j:{compression:.2f} "
         #         f"work_expansion_j:{expansion:.2f} "
-        #         f"net_indicated_work_j:{np.sum(work_deg):.2f} "
+        #         f"net_indicated_work_j:{np.sum(engine_work_deg):.2f} "
         #     )
         
         self.state.work_pumping_j = pumping_work
@@ -914,5 +1095,3 @@ class EngineModel:
         self.state.work_gross_indicated_j = work_gross_indicated
         self.state.work_deg = engine_work_deg
         
-
- 
