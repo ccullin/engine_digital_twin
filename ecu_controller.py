@@ -58,7 +58,7 @@ class ECUController:
         # Flags set externally, typically by Driver Strategy
         self.external_idle_command = 0.0      # used when rl_idle_mode=True
         self.external_spark_advance = 0.0     # used when rl_ecu_spark_mode=True
-        self.is_motoring = False              # set when engine running in motoring mode
+        # self.is_motoring = False              # set when engine running in motoring mode
         self.fuel_enabled = True              # typically used by MotoringStrategy to toggle fuel
         self.spark_enabled = True             # typically used by MotoringStrategy to P.V plot a running engine
         
@@ -311,7 +311,7 @@ class ECUController:
         spark_fire_angle_720 = 360.0 - self.spark_advance_btdc
         rl_spark = 360.0 - self.external_spark_advance
         # Spark Gate
-        can_spark = (not self.is_motoring) or self.spark_enabled
+        can_spark = self.spark_enabled # allows spark to be disabled externally (.e.g for motoring mode)
         
         # Only fire spark at the exact degree
         spark_this_degree = (
@@ -328,7 +328,7 @@ class ECUController:
         """Calculate trapped air, required fuel, and injector timing."""
         
         # Fuel Gate
-        can_inject = (not self.is_motoring) or self.fuel_enabled
+        can_inject = self.fuel_enabled # allows fuel injection to be disabled externally (e.g. for motoring mode)
 
         # Trapped air
         self.trapped_air_mass_kg = self._calculate_trapped_air_mass(MAP_kPa, c.T_INTAKE_K, self.ve_fraction, RPM)
@@ -446,7 +446,7 @@ class ECUController:
         else:
             # If driver is on the throttle, the IACV usually holds a 
             # "dashpot" position to prevent stalling when they lift off.
-            iacv_pos = 32 # Fixed small bypass (1.5% WOT)
+            iacv_pos = 33 # Fixed small bypass (1.5% WOT)
             
         return iacv_pos  
 

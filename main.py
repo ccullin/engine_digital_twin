@@ -21,8 +21,7 @@ if TYPE_CHECKING:
 
 
 parser = argparse.ArgumentParser(description="Engine Digital Twin")
-parser.add_argument("--mode", choices=["idle", "wot", "dyno", "roadtest", "motor"], help="Run Engine in set mode")
-parser.add_argument("--validate", action="store_true", help="Run physics unit tests and exit")
+parser.add_argument("--mode", choices=["idle", "wot", "dyno", "roadtest", "motor", "impulse"], help="Run Engine in set mode")
 parser.add_argument("--debug", action="store_true", default=False, help="run without Dashboard and file logging")
 parser.add_argument("--cycles", type=int, default=3, help="The number of Engine cycles to run")
 parser.add_argument("--rpm", type=int, default=None, help="override the default rpm for the mode")
@@ -46,13 +45,17 @@ class SimulationManager:
         while self.degree_count < 720 and not self.stop_simulation:
             
             # 1. get driver inputs (TPS (accelerator) wheel load (hill or dyno) and ambient air pressure (altitude))
-            driver_outputs:DriverOutput = self.driver.get_environment(self.engine.sensors.rpm, cycle_count, self.degree_count)
+            driver_outputs:DriverOutput = self.driver.get_environment(self.engine.sensors.rpm, 
+                                                                      self.engine.state,
+                                                                      cycle_count, 
+                                                                      self.degree_count
+                                                                      )
 
             # 2. update engine with driver inputs
             self.engine.sensors.TPS_percent = driver_outputs.throttle_pos
             self.engine.sensors.ambient_pressure = driver_outputs.ambient_pressure
             self.engine.state.wheel_load = driver_outputs.wheel_load
-            
+            self.engine.motoring_rpm = driver_outputs.impulse_target_rpm # default is 0 if not mode == impulse      
             
             # 3. get the ecu reponse to current engine sensors
             ecu_outputs = self.ecu.update(self.engine.get_sensors())
@@ -67,15 +70,8 @@ class SimulationManager:
 
 if __name__ == "__main__":
     
-    # Run physics unit tests and exit
-    if args.validate:
-        from physics_validator import PhysicsValidator
-        validator = PhysicsValidator(args.cycles)
-        validator.run_tests()
-        sys.exit(0)
-    
     # Setup to run engine in defined Mode
-    driver = DriverInput(mode=args.mode)
+    driver = DriverInput(mode=args.mode, rpm=args.rpm if args.rpm else None)
     ecu = ECUController()
     
     rpm = args.rpm if args.rpm else driver.strategy.start_rpm
@@ -97,11 +93,8 @@ if __name__ == "__main__":
     try:
         # if hasattr(driver.strategy, 'motoring_enabled'):
         if args.mode == "motor":
-            system.ecu.is_motoring = system.driver.strategy.motoring_enabled
             system.ecu.fuel_enabled = args.can_spark
             system.ecu.spark_enabled = args.can_spark
-            system.engine.motoring_rpm = args.rpm if args.rpm else driver.strategy.start_rpm
-
             
         exit_now = False
         while cycle_count < args.cycles and not exit_now:
@@ -112,10 +105,13 @@ if __name__ == "__main__":
 
             # Optional: old-style bulk update every 10 cycles (can keep or remove)
             # if not args.debug and cycle_count % 10 == 0:
-            if not args.debug:# and cycle_count > 1:
+            if  args.debug:# and cycle_count > 1:
+                print(f"debug dump: flag={hasattr(driver.strategy, 'dump_telemetry')}")
+                if hasattr(driver.strategy, 'dump_telemetry'):
+                    driver.strategy.dump_telemetry(current_cycle=cycle_count, data=data)
+            else: 
                 # if logger:
-                #     logger.log(...)
-                           
+                #     logger.log(...)         
                 # === REAL-TIME DASHBOARD UPDATE for base telemetry ===
                 if dashboard_manager:
                     dashboard_manager.update_base_telemetry(cycle_count, data)

@@ -7,6 +7,9 @@ events.*
 *.txt
 *.png
 
+# But include requirements.txt
+!requirements.txt
+
 # ignore folders
 __pycache__/
 venv/

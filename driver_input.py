@@ -17,10 +17,11 @@ class DriverOutput:
     throttle_pos:float = 0.0
     wheel_load:float = 0.0
     ambient_pressure:float = 0.0
+    impulse_target_rpm: float = 0.0
     
 class DriverInput:
-    def __init__(self, mode="idle", start_rpm=900):
-        self.rpm = 0
+    def __init__(self, mode="idle", rpm=None, start_rpm=900):
+        self.rpm = rpm
         self.cycle = 0 # crank cycle number , which is 720 degrees of rotation
         self.theta = 0 # crank degree of rotation 0-719
 
@@ -29,6 +30,7 @@ class DriverInput:
         self.tps = 0.0  # foot off the accelerator
         self.load = 0.0  # sitting in neutral
         self.air_pressure = c.P_ATM_PA # sea level
+        self.impulse_target_rpm = 0.0
         self.cycle_rpm = np.full(720, start_rpm) # array of the RPM measured at each theta (crank degree)
         
         self.strategy = self._create_strategy(mode)
@@ -41,6 +43,7 @@ class DriverInput:
         self.output.throttle_pos = self.tps
         self.output.wheel_load = self.load
         self.output.ambient_pressure = self.air_pressure
+        self.output.impulse_target_rpm = self.impulse_target_rpm
         
         return self.output
 
@@ -55,7 +58,9 @@ class DriverInput:
         elif mode == "roadtest":
             return strategies.RoadtestStrategy()
         elif mode == "motor":
-            return strategies.MotoringStrategy()
+            return strategies.MotoringStrategy(rpm=self.rpm)
+        elif mode =="impulse":
+            return strategies.ImpulseDynoStrategy()
 
     
    
@@ -70,14 +75,15 @@ class DriverInput:
     # ---------------------------------------------------------------------------------
     # --- UPDATED get_environment ---
     # ---------------------------------------------------------------------------------
-    def get_environment(self, rpm, cycle, theta):
+    def get_environment(self, rpm, engine_state, cycle, theta):
         # --- Update Global Variables ---
         self.rpm = rpm
         self.theta = theta
         self.cycle = cycle
         self.cycle_rpm[theta] = rpm
+        self.governor_torque = np.average(engine_state.torque_governor_history)
                
-        self.tps, self.load, self.air_pressure = self.strategy.driver_update(self) 
+        self.tps, self.load, self.air_pressure, self.impulse_target_rpm = self.strategy.driver_update(self) 
         
         return self.get_driver_output()
         

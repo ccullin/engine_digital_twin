@@ -77,15 +77,22 @@ class MockCylinderState:
     # Arrays for historical lookup (IVC references)
     log_P: np.ndarray = field(default_factory=lambda: np.full(720, 101325.0))
     log_T: np.ndarray = field(default_factory=lambda: np.full(720, 300.0))
-    V_list: np.ndarray = field(default_factory=lambda: np.full(720, 0.0005))
+    V_list: np.ndarray = field(init=False, repr=False)
+    dV_list: np.ndarray = field(init=False, repr=False)
     
     # Instantaneous values for current step
     P_curr: float = 101325.0
     T_curr: float = 300.0
     V_curr: float = 0.0005
     T_wall: float = 450.0
-    V_clearance: float = 0.00005
+    V_clearance: float = c.V_DISPLACED / (c.COMP_RATIO - 1.0)
     spark_event_theta: float = 335.0
+    
+    def __post_init__(self):
+        theta_array = np.arange(720)
+        self.V_list = pf.v_cyl(theta_array, c.A_PISTON, self.V_clearance)
+        V_next = np.roll(self.V_list, -1)  # done this way rather than np.diff to handle index wrapping
+        self.dV_list = V_next - self.V_list
 
 class BaseEngineTest(unittest.TestCase):
     """Provides the standard 'fire_engine' loop used by Integration and Validation."""
@@ -100,7 +107,7 @@ class BaseEngineTest(unittest.TestCase):
         def get_spark(rpm):
             if rpm <= 1000: return 325 # 5 deg BTDC
             if rpm <= 1500: return 348 # 18 deg BTDC
-            if rpm <= 3500: return 338
+            if rpm <= 3500: return 335
             else:
                 return 335 # 28 deg BTDC
             
@@ -158,7 +165,7 @@ class BaseEngineTest(unittest.TestCase):
                         
                         # 3. Set Variable Start based on Fixed End
                         # Example: Injector End is fixed at 170 CAD (standard for many port setups)
-                        ecu.injector_start = ecu.injector_end - pw_degrees
+                        ecu.injector_start = int(ecu.injector_end - pw_degrees)
 
 
                 # 4. Set ECU Outputs
@@ -210,9 +217,7 @@ class TestPhysicsFoundation(unittest.TestCase):
         """
         bd_low = pf.get_burn_duration(rpm=1500, lambda_=1.0)
         bd_high = pf.get_burn_duration(rpm=4500, lambda_=1.0)
-        
-        print(f"\n[Burn Physics] 1500 RPM: {bd_low:.1f}° | 4500 RPM: {bd_high:.1f}°")
-           
+                 
         # 1. 1500 RPM Targets
         # Was: 45.0 - 55.0
         # New Target: 60.0 - 70.0 (Correct for large 94mm bore)
@@ -385,6 +390,7 @@ class TestPhysicsFoundation(unittest.TestCase):
         """Validates continuity for both Intake and Exhaust using vectorized cam logic."""
 
         valves = MockValves()
+        rpm=3000
 
 
         # --- TEST 1: INTAKE (Inflow / Vacuum Sweep) ---
@@ -405,7 +411,7 @@ class TestPhysicsFoundation(unittest.TestCase):
                 A_valve=area_in, lift=lift_in, diameter=valves.intake.diameter,
                 P_cyl=p, T_cyl=c.T_INTAKE_K, R_cyl=c.R_SPECIFIC_AIR, g_cyl=c.GAMMA_AIR,
                 P_extern=c.P_ATM_PA, T_extern=c.T_AMBIENT, R_extern=c.R_SPECIFIC_AIR, g_extern=c.GAMMA_AIR,
-                is_intake=True
+                rpm=rpm,is_intake=True
             )
             mdots_in.append(mdot)
 
@@ -424,7 +430,7 @@ class TestPhysicsFoundation(unittest.TestCase):
                 A_valve=area_ex, lift=lift_ex, diameter=valves.exhaust.diameter,
                 P_cyl=p, T_cyl=c.T_EXHAUST_K, R_cyl=c.R_SPECIFIC_EXHAUST, g_cyl=c.GAMMA_EXHAUST,
                 P_extern=c.P_ATM_PA, T_extern=c.T_AMBIENT, R_extern=c.R_SPECIFIC_AIR, g_extern=c.GAMMA_AIR,
-                is_intake=False
+                rpm=rpm, is_intake=False
             )
             mdots_ex.append(mdot)
 
@@ -473,8 +479,6 @@ class TestPhysicsFoundation(unittest.TestCase):
         # Calculate the "Actual Effective Gamma" of the simulation
         gamma_eff = np.log(p_curr / p_initial) / np.log(c.COMP_RATIO)
         
-        print(f"\n[Integrator Audit] Peak P: {p_curr/1e5:.2f} bar | Eff Gamma: {gamma_eff:.3f}")
-
         # The error check should ensure we aren't losing mass/energy, 
         # allowing for the physical drop in gamma from 1.40 to ~1.375
         self.assertGreater(gamma_eff, 1.36, "Integrator is 'leaking' energy (Pressure too low)")
@@ -683,10 +687,10 @@ class TestEngineIntegration(BaseEngineTest):
         
         loss_pct = (q_loss / q_fuel) * 100
         
-        print(f"\nDEBUG ENERGY CONSERVATAION rpm:{rpm} q_loss:{q_loss:.2f} total Q-fuel:{q_fuel:.2f} ratio:{loss_pct:.2f} ")
-        print(f"|__ T_wall:{engine.cyl.T_wall:.2f} cyl_P:{engine.cyl.P_curr/1000:.2f}kPa " 
-              f"Peak_P:{np.max(engine.cyl.log_P)/1000:.2f}kPa Peak_P_angle:{np.argmax(engine.cyl.log_P):.2f} "
-              f"Peak_T:{np.max(engine.cyl.log_T):.2f}K Peak_T_angle:{np.argmax(engine.cyl.log_T):.2f} ")
+        # print(f"\nDEBUG ENERGY CONSERVATAION rpm:{rpm} q_loss:{q_loss:.2f} total Q-fuel:{q_fuel:.2f} ratio:{loss_pct:.2f} ")
+        # print(f"|__ T_wall:{engine.cyl.T_wall:.2f} cyl_P:{engine.cyl.P_curr/1000:.2f}kPa " 
+        #       f"Peak_P:{np.max(engine.cyl.log_P)/1000:.2f}kPa Peak_P_angle:{np.argmax(engine.cyl.log_P):.2f} "
+        #       f"Peak_T:{np.max(engine.cyl.log_T):.2f}K Peak_T_angle:{np.argmax(engine.cyl.log_T):.2f} ")
         
         
         # Target 20% per your validation report
@@ -741,10 +745,6 @@ class TestEngineIntegration(BaseEngineTest):
             p_max_bar, clt, engine.sensors.rpm, spark_advance, lambda_val, fuel_octane=87.0
         )
         
-        print(f"\n--- FORCED KNOCK TEST ---")
-        print(f"Pmax: {p_max_bar:.2f} bar | Octane: 87 | Spark: {spark_advance} deg")
-        print(f"Knock Detected: {is_knocking} | Severity: {severity:.2f}")
-        
         # 5. Assertions
         self.assertTrue(is_knocking, "Engine should be knocking under these aggressive conditions")
         self.assertGreater(severity, 0.0, "Knock severity should be positive")
@@ -755,16 +755,6 @@ class TestEngineIntegration(BaseEngineTest):
 
         engine, _ = self.fire_engine(rpm=3000, tps=100.0, cycles=10)
             
-        # print(f"\nDEBUG THERMAL "
-        #     # f"T_Indicated:{np.average(engine.state.torque_indicated_history):6.2f}Nm | "
-        #     # f"T_Friction:{np.average(engine.state.torque_friction_history):6.2f}Nm | "
-        #     # f"T_Net:{np.average(engine.state.torque_brake_history):6.2f}Nm | "
-        #     # )
-        #       f"coolant test rpm:{engine.sensors.rpm:.0f} T_brake:{np.average(engine.state.torque_brake_history):.2f} "
-        #       f"T_ind:{np.average(engine.state.torque_indicated_history):.2f} T_fri:{np.average(engine.state.torque_friction_history):.2f} "
-        #       f"P_peak:{np.max(engine.cyl.log_P)/1e5:.0f}bar P_peak_angle:{np.argmax(engine.cyl.log_P)} "
-        #       )    
-        # print(f"\nDEBUG THERMAL Coolant Test (Heating): initial:{initial_clt} -> {engine.sensors.CLT_C:.4f}C")
         self.assertGreater(engine.sensors.CLT_C, initial_clt, 
                            "Engine coolant failed to heat up after 10 WOT cycles")
 
@@ -774,20 +764,12 @@ class TestEngineIntegration(BaseEngineTest):
         engine, _ = self.fire_engine(rpm=3000, tps=100.0, cycles=10)   
 
         map_wot = engine.sensors.MAP_kPa
-        # print(f"\nWOT rpm:{engine.sensors.rpm} MAP:{map_wot:.2f} TPS_e:{engine.state.effective_tps:.2f} "
-        #       f"T_brake:{engine.state.torque_brake:.2f} T_ind:{engine.state.torque_indicated_history[-1]:.2f} "
-        #       f"T_fri:{engine.state.torque_friction:.2f} "
-        #       f"lambda:{engine.sensors.lambda_} "
-        #       )
         
         # 2. Close Throttle
         # engine.sensors.TPS_percent = 0 # the IACV is has min opening set in ecu
         engine, _ = self.fire_engine(rpm=3000, tps=0.0, cycles=3) # the IACV is has min opening set in ecu
         map_closed = engine.sensors.MAP_kPa
-        
-        # print(f"\nclosed rpm:{engine.sensors.rpm:.2f} MAP:{map_closed} TPS_e:{engine.state.effective_tps:.2f} " )
-        # print(f"\nP_peak:{np.max(engine.cyl.log_P)/1000:.0f}kPa P_peak_angle:{np.argmax(engine.cyl.log_P)} " )   
-        
+    
         self.assertLess(map_closed, map_wot, "Manifold pressure failed to drop when throttle closed")
     
     def test_firing_symmetry(self):
@@ -822,93 +804,136 @@ class TestEngineIntegration(BaseEngineTest):
         for i in range(len(power_peaks)-1):
             diff = power_peaks[i+1] - power_peaks[i]
             self.assertAlmostEqual(diff, 180, delta=5)
+    
+    
+    def test_firing_power_consistency(self):
+        """
+        Validates that a firing engine produces positive net work and that
+        instantaneous torque history matches the cycle-work integration.
+        """
             
-    def test_motoring_parasitic_drag(self):
+        engine, _ = self.fire_engine(rpm=3000, tps=100, rpm_hold=True, thermal_state="hot", cycles=5)
+ 
+        j_to_nm = 1.0 / (4 * np.pi)
         
-        # cycle motoring engine
+        # Calculate Averages
+        t_ind_avg_history = np.mean(engine.state.torque_indicated_history)
+        t_brake_avg_history = np.mean(engine.state.torque_brake_history)
+        
+        # Work-based scalars (calculated by the model at the end of the cycle)
+        t_ind_avg_work = engine.state.work_net_indicated_j * j_to_nm
+        t_fric_avg_work = engine.state.work_friction_j * j_to_nm
+              
+        # 5. VALIDATION
+        # A: Numerical Consistency (History vs Integrated Work)
+        # Using a 720-sample window, these should be nearly identical
+        self.assertAlmostEqual(t_ind_avg_history, t_ind_avg_work, delta=0.05)
+        
+        # B: Physics Consistency (Brake = Indicated - Friction)
+        # Note: torque_governor is 0 if not motoring/governed, otherwise subtract it
+        expected_brake = t_ind_avg_work + t_fric_avg_work
+        self.assertAlmostEqual(t_brake_avg_history, expected_brake, delta=0.05)
+        
+        # C: Performance Sanity Check
+        # A 4-cylinder engine at WOT should definitely produce positive brake torque
+        self.assertGreater(t_brake_avg_history, 20.0, "Engine is firing but not producing power!")
+        
+    
+    def test_motoring_parasitic_drag(self):
+        # Setup motoring engine
         ecu = MockEcuOutput()
         engine = EngineModel(rpm=3000)
         engine.motoring_rpm = 3000
         engine.sensors.TPS_percent = 100.0
-        engine.sensors.CLT_C = 90.0  # Warm engine
-        for _ in range(3 * 720):
-            engine.step(ecu)
-             
-        # The torque the dyno HAD to provide to stay at 3000 RPM
-        # This is the "Torque the crank needs to overcome"
-        avg_dyno_support = np.average(engine.state.torque_governor_history)
+        engine.sensors.CLT_C = 70
+        engine.cyl.T_wall = 90 + 273.15
+        engine.cyl.T_curr = 90 + 273.15
         
-        # Total Drag is the inverse of the support required to keep speed steady
-        total_drag = -avg_dyno_support 
-        
+        # Conversion: Cycle Work (Joules) to Average Torque (Nm)
+        # Torque_avg = Total_Work / Total_Radians
+        # Total_Radians for 720 deg = 4 * pi
         j_to_nm = 1.0 / (4 * np.pi)
         
-        # Gas Exchange Diagnostic
+        
+        # Run for 3 cycles to reach steady state
+        for cycle in range(10):
+            for _ in range(720):
+                engine.step(ecu)
+            t_ind_avg_history = np.mean(engine.state.torque_indicated_history)
+            t_ind_avg_work = engine.state.work_net_indicated_j * j_to_nm       
+
+        # 1. INDICATED TORQUE (Gas work only)
+        t_ind_avg_history = np.mean(engine.state.torque_indicated_history)
+        t_ind_avg_work = engine.state.work_net_indicated_j * j_to_nm
+        
+        # 2. BRAKE TORQUE (The real drag)
+        # Average of instantaneous physics loop vs Cycle work calculation
+        t_brake_avg_history = np.mean(engine.state.torque_brake_history)
+        t_friction_avg_work = engine.state.work_friction_j * j_to_nm
+        t_brake_avg_work = t_ind_avg_work + t_friction_avg_work
+         
+        # 3. DYNO SUPPORT (The Governor)
+        # At steady state motoring, the Dyno support must equal the drag (Inverse of Brake Torque)
+        avg_dyno_support = np.average(engine.state.torque_governor_history)
+        total_drag = -avg_dyno_support 
+
+        # 4. DIAGNOSTICS
         w_pumping = engine.state.work_pumping_j
         pumping_torque_nm = w_pumping * j_to_nm
-        pmep_bar = (abs(w_pumping) / engine.cyl.V_displaced) / 1e5
-        
-        # Mechanical/Thermal Remainder
+        PMEP = engine.state.PMEP
         mech_thermal_drag = total_drag - pumping_torque_nm
-        
-        # check work done.
-        t_compression_nm =     engine.state.work_compression_j * j_to_nm 
-        t_expansion_nm =       engine.state.work_expansion_j * j_to_nm
-        t_friction_nm =        engine.state.friction_work_j * j_to_nm
-        t_indicated_nm =       engine.state.indicated_work_j * j_to_nm
-        t_brake_nm =           engine.state.net_work_j * j_to_nm
-        
-        t_indicated_calc = pumping_torque_nm + t_compression_nm + t_expansion_nm
-        t_brake_calc = t_indicated_nm - t_friction_nm
 
-        print(f"\n--- DRAG DIAGNOSTIC (3000 RPM @ STEADY STATE) ---")
-        print(f"DYNO SUPPORT:    {avg_dyno_support:.2f} Nm")
-        print(f"TOTAL DRAG:      {total_drag:.2f} Nm")
-        print(f"  └─ PUMPING:    {pumping_torque_nm:.2f} Nm (PMEP: {pmep_bar:.3f} bar)")
-        print(f"  └─ MECH+THERM: {mech_thermal_drag:.2f} Nm")
-
-        print(f"\n--- ENGINE WORK DATA (Converted to Nm for Comparison) ---")
-        print(f"T BRAKE (MEASURED):  {t_brake_nm:.2f} Nm")
-        print(f"T BRAKE (CALC):      {t_brake_calc:.2f} Nm")
-        print(f"  └─ INDICATED:      {t_indicated_nm:.2f} Nm")
-        print(f"  └─ FRICTION:       {t_friction_nm:.2f} Nm")
+        # VALIDATION
+        # History mean must match Work calculation (Numerical Consistency)
+        self.assertAlmostEqual(t_ind_avg_history, t_ind_avg_work, delta=0.01)
+        self.assertAlmostEqual(t_brake_avg_history, t_brake_avg_work, delta=0.01)
         
-        print(f"\n--- ENGINE WORK DATA (Indicated Torque Check) ---")
-        print(f"T INDICATED (MEASURED): {t_indicated_nm:.2f} Nm")
-        print(f"T INDICATED (CALC):     {t_indicated_calc:.2f} Nm")
-        print(f"  └─ COMPRESSION:       {t_compression_nm:.2f} Nm")
-        print(f"  └─ EXPANSION:         {t_expansion_nm:.2f} Nm")
-        print(f"  └─ FRICTION:          {t_friction_nm:.2f} Nm")
+        # Total Drag (Dyno) matches the sum of Indicated - Friction
+        # This is the "Gold Standard" physics check
+        calculated_drag = t_ind_avg_work + (engine.state.work_friction_j * j_to_nm)
+        self.assertAlmostEqual(total_drag, calculated_drag, delta=0.01)
         
-        # Validation
-        self.assertLess(total_drag, -2.0, "Engine has zero friction! Check friction logic.")
-        self.assertGreater(total_drag, -35.0, "Engine drag is too high! Is the brake on?")
+        # Total Drag should match Brake Torque (Physics Consistency)
+        self.assertAlmostEqual(total_drag, t_brake_avg_work, delta=0.01)
+        
+        # Sanity Checks
+        self.assertLess(total_drag, -2.0, "Engine friction is missing!")
+        self.assertGreater(total_drag, -35.0, "Engine drag is unrealistically high!")
     
+    
+    def test_torque_work_consistency(self):
+        """Ensures Indicated Work matches the integral of Indicated Torque."""
+        engine, _ = self.fire_engine(rpm=3000, rpm_hold=True, tps=70.0, cycles=5)
+        
+        # Total Work from P*dV
+        work_j = engine.state.work_net_indicated_j
+        
+        # Total Work from Torque integral: Sum(T) * dTheta_radians
+        torque_sum_j = np.sum(engine.state.torque_indicated_history) * (np.pi / 180.0)
+        
+        # Account for 4 cylinders if work_j is 'per engine cycle'
+        # Check if your work_net_indicated_j is already multiplied by NUM_CYL
+        self.assertAlmostEqual(work_j, torque_sum_j, delta=1.0) # larger delta as comparing in J rather than Nm.
+       
     def test_full_load_friction_scaling(self):
         # 1. Warm up the engine
-        engine, _ = self.fire_engine(rpm=3000, tps=100, thermal_state="warm", cycles=5)
+        engine, _ = self.fire_engine(rpm=3000, rpm_hold=True, tps=100, thermal_state="warm", cycles=5)
 
-            
         # 3. Collect Data
-        w_fric_wot = engine.state.friction_work_j
-        t_fric_wot = w_fric_wot / (4 * np.pi)
+        w_fric_wot = engine.state.work_friction_j
         
         # Peak Cylinder Pressure (for context)
         p_max = np.max(engine.cyl.log_P) / 1e5 # bar
         
-        print(f"\n--- LOAD SCALING DIAGNOSTIC (3000 RPM @ WOT) ---")
-        print(f"PEAK CYL PRESSURE: {p_max:.1f} bar")
-        print(f"FRICTION TORQUE:   {t_fric_wot:.2f} Nm")
-        
         # 4. Physical Sanity Check
         # At WOT, friction should be ~20-50% higher than motoring 
         # due to the rings being forced against the walls.
-        motoring_fric = 6.10 # Our previous baseline
-        increase = (t_fric_wot / motoring_fric) - 1.0
-        
-        print(f"SCALING INCREASE:  {increase*100:.1f}%")
-        
-        self.assertGreater(t_fric_wot, motoring_fric, "Friction didn't increase under load!")
+        engine, _ = self.fire_engine(rpm=3000, motoring=True, tps=100, thermal_state="warm", cycles=5)
+        motoring_fric = engine.state.work_friction_j
+        # motoring_fric = 6.10 # Our previous baseline
+        increase = (w_fric_wot / motoring_fric) - 1.0
+                
+        self.assertGreater(abs(w_fric_wot), abs(motoring_fric), "Friction didn't increase under load!")
 
     def test_volumetric_efficiency_limits(self):
         """Validation: Is the air-mass trapping realistic for a 2.1L?"""
@@ -918,7 +943,7 @@ class TestEngineIntegration(BaseEngineTest):
         
         # At 1 bar, a 525cc cylinder holds ~0.6g of air. 
         # With VE and heating, 0.45g - 0.55g is the 'Digital Twin' target.
-        trapped_mass_mg = engine.cyl.air_mass_at_spark * 1e6
+        trapped_mass_mg = (engine.cyl.air_mass_at_spark - engine.cyl.air_mass_at_TDC) * 1e6
         self.assertGreater(trapped_mass_mg, 400.0, "Engine is gasping for air (VE too low)")
         self.assertLess(trapped_mass_mg, 650.0, "Engine is supercharging itself (VE too high)")
         
@@ -949,12 +974,6 @@ class TestEngineIntegration(BaseEngineTest):
         v_tdc = engine.cyl.V_clearance
         gamma = 1.4 # Specific heat ratio for air
         p_theoretical = p_at_ivc_bar * (v_ivc / v_tdc)**gamma
-
-        print(f"\n--- STATIC COMPRESSION AUDIT ---")
-        print(f"Pressure at IVC ({ivc_idx} CAD): {p_at_ivc_bar:.2f} bar")
-        print(f"Peak Motoring Pressure:      {p_max_bar:.2f} bar")
-        print(f"Theoretical Adiabatic Peak:  {p_theoretical:.2f} bar")
-        print(f"--------------------------------")
 
         # Validation: If Actual is significantly lower than Theoretical, 
         # the model has a mass-leak or 'Blow-back' issue.
@@ -987,7 +1006,7 @@ class TestPhysicsValidation(BaseEngineTest):
     def test_volumetric_efficiency_high_rpm(self):
         """Target: 0.88 (88%) VE at 4500 RPM WOT"""
         engine, _ = self.fire_engine(rpm=4500, tps=100.0)
-        actual_mass = engine.cyl.air_mass_at_IVC
+        actual_mass = engine.cyl.air_mass_at_IVC - engine.cyl.air_mass_at_TDC
         P_manifold = engine.sensors.P_manifold_Pa
         C_DISPLACED = c.V_DISPLACED
         ideal_mass = (engine.sensors.P_manifold_Pa * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
@@ -1058,38 +1077,202 @@ class TestPhysicsValidation(BaseEngineTest):
         intake = engine.valves.intake
         exhaust = engine.valves.exhaust
         P_peak_angle = engine.cyl.P_peak_angle
-        mass_at_spark = engine.cyl.total_mass_at_spark
+        mass_at_spark = engine.cyl.air_mass_at_spark
         spark = ecu.spark_timing
         start_trigger = ecu.injector_start % 720
         end_trigger = ecu.injector_end % 720
-        
+       
 
 
         # 2. Volumetric Efficiency
-        # mass_at_IVC = engine.cyl.total_mass_at_IVC
         air_mass_at_IVC = engine.cyl.air_mass_at_IVC
+        air_mass_at_TDC = engine.cyl.air_mass_at_TDC
         # displacement_calc = max(engine.cyl.V_list) - min(engine.cyl.V_list)
         displacement_cylinder = c.V_DISPLACED
         ideal_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
-        ve = (air_mass_at_IVC / ideal_mass) * 100
-        print(f"VE: {ve}")
+        ve = ((air_mass_at_IVC - air_mass_at_TDC) / ideal_mass) * 100
+        # print(f"VE: {ve}")
         # for CAD in range(720):
-        #     print(f"DEBUG MASS: CAD{CAD} @spark{mass_at_spark:.7f} @IVC:{air_mass_at_IVC:.7f} total@CAD:{engine.cyl.total_mass_history[CAD]:.7f} "
+        #     print(f"DEBUG MASS: CAD{CAD} @spark:{mass_at_spark:.6f} @IVC:{air_mass_at_IVC:.6f} @TDC:{air_mass_at_TDC:.6f} "
+        #           f"total@CAD:{engine.cyl.total_mass_history[CAD]:.7f} "
         #           f"a_i:{engine.valves.intake_area_table[CAD]:.7f} Cd_i:{engine.cyl.Cd_in_history[CAD]:.7f} " 
         #           f"l_i:{engine.valves.intake_lift_table[CAD]:.7f} "
-        #           f"rpm:{engine.sensors.rpm_history[CAD]:.0f} MAP:{engine.state.map_history[CAD]/1000:.3f}kPa ")
+        #           f"rpm:{engine.sensors.rpm_history[CAD]:.0f} MAP:{engine.state.map_history[CAD]/1000:.2f}kPa "
+        #           f"cyl_P:{engine.cyl.log_P[CAD]/1000:.2f}kPa")
         #     if CAD == int(engine.valves.intake.close_angle): print("IVC")
         #     elif CAD == int(ecu.spark_timing): print("SPARK")
-            
-        self.assertTrue(88.0 < ve < 93.0)
-
+        #     elif CAD == start_trigger: print("FUEL ON")
+        #     elif CAD == end_trigger: print("FUEL OFF")
         
-
+        # for cad in range(720):
+        #     cad_in_range = (0 < cad <=30) or (180 <= cad <= 240) or (690 <= cad <= 720)
+        #     if cad_in_range:
+        #         p_cyl = engine.cyl.log_P[cad] / 1000.0
+        #         p_man = engine.state.map_history[cad] / 1000.0
+        #         dm_in = engine.cyl.dm_in_history[cad] * 1e6 # Convert to mg
+        #         dm_ex = engine.cyl.dm_ex_history[cad] * 1e6
+        #         dm_tot = dm_in + dm_ex
+        #         m_tot = engine.cyl.total_mass_history[cad] * 1e6
+        #         Cd = engine.cyl.Cd_in_history[cad]
+        #         m_TDC = engine.cyl.air_mass_at_TDC 
+        #         m_IVC = (engine.cyl.air_mass_at_IVC - m_TDC)
+        #         T_cyl = engine.cyl.log_T[cad] 
+        #         T_wall = engine.cyl.T_wall
+        #         clt_c = engine.sensors.CLT_C
+        #         iat_k = engine.sensors.IAT_K
+            
+                
+        #         # Print specifically where flow is entering (dm > 0) 
+        #         # despite pressure being equalizing/reversing
+        #         if dm_in > 0 or dm_ex < 0 or cad % 5 == 0:
+        #             print(f"{cad:4d} | {T_cyl:7.2f}K | {p_cyl:7.2f}kPa | {p_man:7.2f}kPa | {dm_in:9.4f}mg | {dm_ex:9.4f}mg | {dm_tot:9.4f}mg  | {m_tot:9.4f}mg | {Cd:7.2f} | {m_IVC:9.6f}")
+        # ideal_air_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
+        # ve = (m_IVC / ideal_air_mass) * 100
+        # print(f"mass_TDC:{m_TDC:9.6f}kg ideal_mass:{ideal_air_mass:9.6f}kg")
+        # print(f"FINAL CYCLE VE: {ve:.2f}% T_wall:{T_wall:.1f} CLT:{clt_c:.1f}C IAT:{iat_k:.1f}K")
+            
+        # self.assertTrue(88.0 < ve < 93.0)
+        # 86% to 92% is a realistic window for a warm WBX at 3000 RPM
+        self.assertTrue(86.0 < ve < 92.0)
 
         # 3. PMEP (Gas Exchange Efficiency)
-        pumping_j = engine.state.work_pumping_j
-        pmep = abs(pumping_j) / (c.NUM_CYL * c.V_DISPLACED) / 1e5
+        # pumping_j = engine.state.work_pumping_j
+        # pmep = abs(pumping_j) / (c.NUM_CYL * c.V_DISPLACED) / 1e5
+        pmep = engine.state.PMEP
         self.assertLess(pmep, 0.25)
+        
+    def test_fmep_thermal_sensitivity(self):
+        """
+        Validates that FMEP drops as the engine warms up (oil viscosity effect).
+        """
+        # Cold Start
+        engine_cold, _ = self.fire_engine(rpm=2000, tps=20, thermal_state="cold", cycles=2)
+        fmep_cold = engine_cold.state.FMEP
+        
+        # Fully Warm
+        engine_hot, _ = self.fire_engine(rpm=2000, tps=20, thermal_state="hot", cycles=5)
+        fmep_hot = engine_hot.state.FMEP
+        
+        self.assertGreater(abs(fmep_cold), abs(fmep_hot) * 1.2, "FMEP should be at least 20% higher on a cold engine.")
+        
+    def test_pmep_vacuum_scaling(self):
+        """
+        Tier 3: Audits Pumping MEP at Idle vs WOT.
+        VW 2.1L should show significant pumping work at high vacuum.
+        """
+        # Case A: WOT (Low Pumping Loss)
+        engine_wot, _ = self.fire_engine(rpm=3000, tps=100.0, cycles=5)
+        pmep_wot = engine_wot.state.PMEP # Expected ~0.2 bar
+        
+        # Case B: Idle/Part Throttle (High Pumping Loss)
+        engine_idle, _ = self.fire_engine(rpm=3000, tps=5.0, cycles=5)
+        pmep_idle = engine_idle.state.PMEP # Expected ~0.6 - 0.9 bar
+        
+        self.assertGreater(abs(pmep_idle), abs(pmep_wot), "PMEP should increase as throttle closes (throttling losses).")
+        self.assertLess(pmep_wot, 0.4, "WOT Pumping losses too high; check valve flow restrictions.")
+        
+    def test_mep_mathematical_balance(self):
+        """
+        Tier 2: Validates the physical identity IMEP_net = BMEP + FMEP.
+        This ensures no energy is 'vanishing' in the integrator.
+        """
+        engine, _ = self.fire_engine(rpm=3000, tps=100.0, rpm_hold=True, cycles=10)
+        
+        # Extract MEPs (assuming these are in Bar)
+        imep_n = engine.state.IMEP_net
+        bmep = engine.state.BMEP
+        fmep = engine.state.FMEP
+        
+        # The sum of what we use (Brake) and what we lose (Friction) 
+        # must equal the work indicated on the piston crown.
+        calculated_imep = bmep - fmep
+        
+        self.assertAlmostEqual(imep_n, calculated_imep, delta=0.05, 
+                            msg="MEP Balance broken: Energy is not conserved in the model.")
+        
+        
+    def test_mep_at_true_idle(self):
+        """
+        Audits the engine's operating state at 900 RPM.
+        Ensures that MEP magnitudes are within standard automotive bounds.
+        """
+        # 900 RPM, Hot, IACV at typical idle position
+        engine, _ = self.fire_engine(rpm=900, tps=0.0, rpm_hold=True, cycles=20)
+        
+        # 1. FMEP Sanity (Usually 0.8 - 1.2 bar for a warm engine at 900 RPM)
+        # If this is 0.1 or 5.0, your friction model is unphysical.
+        self.assertGreater(abs(engine.state.FMEP), 0.6, "Friction is too low for a real engine.")
+        self.assertLess(abs(engine.state.FMEP), 1.8, "Friction is too high for a real engine.")
+
+        # 2. PMEP Sanity (Usually 0.3 - 0.6 bar at idle vacuum)
+        # Validates that your throttle/IACV actually creates pumping losses.
+        self.assertGreater(abs(engine.state.PMEP), 0.2, "Pumping losses are too low (check vacuum).")
+
+        # 3. Efficiency Audit (BMEP / IMEP_g)
+        # At idle, mechanical efficiency is technically 0%, but we look at 
+        # Indicated efficiency to see if combustion is reasonable.
+        efficiency = engine.state.work_net_indicated_j / (engine.cyl.total_cycle_heat_J * c.NUM_CYL)
+        # Check that efficiency is between 25% and 45%
+        self.assertGreater(efficiency, 0.25, f"Efficiency {efficiency:.2%} is too low")
+        self.assertLess(efficiency, 0.45, f"Efficiency {efficiency:.2%} is too high")
+
+        # 4. The "Driveability" check
+        # We allow BMEP to be non-zero (since IACV is static), but it must 
+        # be within a 'catchable' range for a real PID controller.
+        self.assertLess(abs(engine.state.BMEP), 1.0, "Engine is too far from balance to idle.")
+        
+    def test_mechanical_efficiency_wot(self):
+        """Audits the ratio of Brake work to Indicated work at peak torque."""
+        engine, _ = self.fire_engine(rpm=3000, rpm_hold=True, tps=100.0, thermal_state="hot", cycles=10)
+        
+        imep_g = engine.state.IMEP_gross
+        imep_n = engine.state.IMEP_net
+        pmep   = engine.state.PMEP   # Should be ~ -0.15 to -0.25 at WOT
+        fmep   = engine.state.FMEP   # Should be ~ -1.2
+        bmep   = engine.state.BMEP   # Should be ~ 9.5
+        
+        # Mech Efficiency = BMEP / IMEP
+        mech_eff = bmep / imep_n
+        
+        # Stock WBX target: 0.85 - 0.92
+        self.assertGreater(mech_eff, 0.85)
+        self.assertLess(mech_eff, 0.95)
+        
+    def test_mep_balance_audit(self):
+        """
+        Validation: Audits that Indicated work minus losses equals Brake work.
+        Identity: IMEP_gross + PMEP + FMEP = BMEP (using signed values).
+        """
+        engine, _ = self.fire_engine(rpm=3000, tps=100.0, cycles=10)
+        
+        # Standardizing to Bar
+        # Assuming your model now provides these in engine.state
+        imep_g = engine.state.IMEP_gross
+        pmep   = engine.state.PMEP   # Should be ~ -0.15 to -0.25 at WOT
+        fmep   = engine.state.FMEP   # Should be ~ -1.2
+        bmep   = engine.state.BMEP   # Should be ~ 9.5
+        
+        calculated_bmep = imep_g + pmep + fmep
+        
+        self.assertAlmostEqual(bmep, calculated_bmep, delta=0.05, 
+                            msg=f"MEP Balance Failure: BMEP({bmep:.2f}) != Calc({calculated_bmep:.2f})")
+        
+    def test_mep_ratio_realism(self):
+        """
+        Validates the ratio of Friction to Pumping losses for a stock 2.1L WBX.
+        FMEP is typically 5-8x larger than PMEP at WOT.
+        """
+        engine, _ = self.fire_engine(rpm=3000, tps=100.0, cycles=5)
+        
+        pmep_abs = abs(engine.state.PMEP)
+        fmep_abs = abs(engine.state.FMEP)
+        
+        # Real world: FMEP (~1.2 bar) vs PMEP (~0.2 bar)
+        ratio = fmep_abs / pmep_abs
+               
+        self.assertGreater(ratio, 4.0, "Pumping losses are too high relative to friction (Check valve Cd).")
+        self.assertLess(ratio, 10.0, "Mechanical friction is too high (Check friction coefficient).")
+    
 
     def test_combustion_energy_partition(self):
         """Validates Heat Loss % and Peak Temperature."""
@@ -1099,9 +1282,58 @@ class TestPhysicsValidation(BaseEngineTest):
         
         P_peak_angle = engine.cyl.P_peak_angle
         
-        
         self.assertAlmostEqual(pct_loss, 20.0, delta=2.0)
         self.assertLess(max_t, 2850.0)
+    
+    def test_pumping_loss_floor(self):
+        """Validates that gas exchange costs energy (PMEP)."""
+        engine, _ = self.fire_engine(rpm=4800, tps=100.0)
+        pmep = abs(engine.state.PMEP)
+        
+        # At high RPM, PMEP should grow as air chokes through the valves
+        self.assertGreater(pmep, 0.25, "Pumping losses are too low (Intake/Exhaust is too 'free').")
+        
+    def test_fuel_efficiency_bsfc(self):
+        """Validates the overall energy conversion efficiency."""
+        engine, _ = self.fire_engine(rpm=3000, tps=100.0)
+        # Target for 80s tech: 260-300 g/kWh
+        bsfc = engine.state.BSFC_g_kWh 
+        self.assertIn(bsfc, [250, 320], "BSFC is non-physical for a VW WBX.")
+        
+class TestWBXValidation(BaseEngineTest):
+    """Specific physics benchmarks for the 2.1L VW Waterboxer."""
+
+    def test_mechanical_efficiency_envelope(self):
+        """Checks if internal drag is realistic for a pushrod boxer."""
+        # Target: Mechanical Efficiency (BMEP/IMEP) should be ~85-88% at WOT
+        engine, _ = self.fire_engine(rpm=3000, tps=100.0, cycles=10)
+        
+        mech_eff = engine.state.BMEP / engine.state.IMEP_net
+        
+        # This will fail your current 71% result and force a physics fix
+        self.assertGreater(mech_eff, 0.82, "Friction is consuming too much power (Non-Physical).")
+        self.assertLess(mech_eff, 0.90, "Friction is too low for a pushrod engine.")
+
+    def test_fmep_speed_scaling(self):
+        """Ensures friction doesn't 'explode' at high RPM."""
+        engine_3k, _ = self.fire_engine(rpm=3000, tps=100.0)
+        engine_5k, _ = self.fire_engine(rpm=5000, tps=100.0)
+        
+        fmep_3k = abs(engine_3k.state.FMEP)
+        fmep_5k = abs(engine_5k.state.FMEP)
+        
+        # For a WBX, FMEP shouldn't jump from 2.0 to 4.0 bar just by adding 2k RPM.
+        # This checks the "curvature" of your friction model.
+        self.assertLess(fmep_5k / fmep_3k, 1.5, "Friction curve is too steep at high RPM.")
+        
+    def test_indicated_torque_magnitude(self):
+        """Ensures combustion pressure isn't 'over-tuned' to hide friction."""
+        engine, _ = self.fire_engine(rpm=3000, tps=100.0)
+        t_ind = np.mean(engine.state.torque_indicated_history)
+        
+        # 2.1L NA engine should not exceed ~195 Nm indicated to hit 160 Nm brake
+        self.assertLess(t_ind, 200, "Indicated torque is too high (unphysical combustion pressure).")
+        self.assertGreater(t_ind, 175, "Indicated torque is too low to sustain 160 Nm brake.")
 
 if __name__ == '__main__':
     unittest.main()

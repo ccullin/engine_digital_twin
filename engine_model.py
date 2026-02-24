@@ -67,7 +67,7 @@ class CylinderState:
     log_T: np.ndarray = field(default_factory=lambda: np.full(720, c.T_AMBIENT))
     P_peak_bar: float = 0.0
     P_peak_angle: float = 0.0
-    T_wall: float = c.T_AMBIENT + 20   # K.  adding buffer for start stability and speed
+    T_wall: float = c.T_AMBIENT # + 20   # K.  adding buffer for start stability and speed
     
     # Thermodynamic tracking
     Q_loss_total: float = 0.0 # heat loss from ctl to cyl_wall
@@ -92,6 +92,7 @@ class CylinderState:
     dm_ex_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
     Cd_in_history:  np.ndarray = field(default_factory=lambda: np.zeros(720))
     Cd_ex_history:  np.ndarray = field(default_factory=lambda: np.zeros(720))
+    air_mass_at_TDC: float = 0.0
     air_mass_at_IVC: float = 0.0
     fuel_mass_at_IVC: float = 0.0
     total_mass_at_IVC: float = 0.0
@@ -125,7 +126,7 @@ class CylinderState:
         # Precomputed cylinder  vectors    
         theta_array = np.arange(720)
         self.V_list = pf.v_cyl(theta_array, self.A_piston, self.V_clearance)
-        V_next = np.roll(self.V_list, -1)  # done this way rather than np.diff to handle index wrapping
+        V_next = np.roll(self.V_list, -1)  # -1 means looking forward.
         self.dV_list = V_next - self.V_list
         self.V_curr = self.V_list[0]
         self.total_mass_kg = (self.P_curr * self.V_clearance) / (c.R_SPECIFIC_EXHAUST * self.T_curr)
@@ -347,28 +348,38 @@ class EngineState:
     torque_friction_global_history: np.ndarray = field(default_factory=lambda: np.zeros(720))
   
     # work audit
-    work_deg: np.ndarray = field(default_factory=lambda: np.zeros(720))
+    work_engine_720: np.ndarray = field(default_factory=lambda: np.zeros(720))
     work_pumping_j: float = 0.0
     work_compression_j: float = 0.0
     work_expansion_j: float = 0.0
     work_net_indicated_j: float = 0.0
     work_gross_indicated_j: float = 0.0
+    work_friction_j: float = 0.0
+    
+    # Mean Effective Pressure audit
+    IMEP_net: float = 0.0
+    IMEP_gross: float = 0.0
+    PMEP: float = 0.0
+    FMEP: float = 0.0
+    BMEP: float = 0.0
+    mechanical_efficiency: float = 0.0
+    
      
     @property
     def map_avg_kPa(self) -> float:
         return np.mean(self.map_history)
     
-    @property
-    def friction_work_j(self) -> float:
-        return np.sum(self.torque_friction_history) * np.pi / 180.0
+    # @property
+    # def friction_work_j(self) -> float:
+    #     return np.sum(self.torque_friction_history) * np.pi / 180.0
     
-    @property
-    def net_work_j(self) -> float:
-        return np.sum(self.torque_brake_history) * np.pi / 180.0
+    # @property
+    # def net_work_j(self) -> float:
+    #     return np.sum(self.torque_brake_history) * np.pi / 180.0
     
-    @property
-    def indicated_work_j(self) -> float:
-        return np.sum(self.torque_indicated_history) * np.pi / 180.0
+    # @property
+    # def indicated_work_j(self) -> float:
+    #     return np.sum(self.torque_indicated_history) * np.pi / 180.0
     
     
 @dataclass(slots=True, frozen=True)
@@ -404,7 +415,7 @@ class EngineModel:
         
         self.motoring_rpm = 0.0  # in motoring mode the driver strategy will set this for engine analysis.
         
-        self.print_geom()
+        # self.print_geom()
 
 
     def print_geom(self):
@@ -456,6 +467,7 @@ class EngineModel:
         
         CAD = int(self.state.current_theta)
         stroke, _ = self._get_stroke()
+        # prime these variables so they work for substep 0
         P_next = self.cyl.log_P[CAD]
         T_next = self.cyl.log_T[CAD]
 
@@ -522,9 +534,10 @@ class EngineModel:
             f_fuel = self.cyl.fuel_mass_kg / m_old
             # f_exh is implicitly (1 - f_air - f_fuel)
             
+            TOL = 1e-8
             if 210 < CAD < 460:
-                if deltas["dm_i"] > 0: print(f"WANRING: dm_in:{deltas["dm_i"]:.2e} >0 between IVC and EVO at CAD:{CAD}")
-                if deltas["dm_e"] < 0: print(f"WANRING: dm_out:{deltas["dm_e"]:.2e} <0 between IVC and EVO at CAD:{CAD}")
+                if deltas["dm_i"] > TOL: print(f"WANRING: dm_in:{deltas["dm_i"]:.2e} >0 between IVC and EVO at CAD:{CAD}")
+                if deltas["dm_e"] < -TOL: print(f"WANRING: dm_out:{deltas["dm_e"]:.2e} <0 between IVC and EVO at CAD:{CAD}")
 
             # --- INTAKE PORT FLOW ---
             if deltas["dm_i"] > 0:
@@ -597,8 +610,15 @@ class EngineModel:
         self.cyl.Q_loss_history[CAD] = Q_loss_step_sum
         
         #  MECHANICAL DYNAMICS (Calculated once per degree using final state)
+        # use cyl_P at start of step.
+        P_start_of_degree = self.cyl.log_P[CAD]
         # We use the full degree dV here because work is summed across the step
-        self._update_mechanical_dynamics(CAD, stroke, self.cyl.log_P[(CAD - 1) % 720], P_curr, self.cyl.dV_list[CAD])
+        # We use the dV that corresponds to the transition from (CAD) to CAD+1
+        self._update_mechanical_dynamics(CAD=CAD, 
+                                         cyl_P_start=P_start_of_degree, 
+                                         cyl_P_end=P_next, 
+                                         dv=self.cyl.dV_list[CAD]
+                                         )
         
         # --- set MAP using latest rpm
         map_Pa = pf.update_intake_manifold_pressure(effective_tps, self.sensors.rpm)    
@@ -629,7 +649,7 @@ class EngineModel:
             A_i, L_i, self.valves.intake.diameter,
             P_cyl=self.cyl.P_curr, T_cyl=self.cyl.T_curr, R_cyl=self.cyl.R_specific_blend, g_cyl=self.cyl.gamma_blend,
             P_extern=self.sensors.P_manifold_Pa, T_extern=c.T_AMBIENT, R_extern=c.R_SPECIFIC_AIR, g_extern=c.GAMMA_AIR,
-            is_intake=True
+            rpm=self.sensors.rpm, is_intake=True
         )
         dm_i = dm_i_raw * dt
         
@@ -638,13 +658,13 @@ class EngineModel:
             A_e, L_e, self.valves.exhaust.diameter,
             P_cyl=self.cyl.P_curr, T_cyl=self.cyl.T_curr, R_cyl=self.cyl.R_specific_blend, g_cyl=self.cyl.gamma_blend,
             P_extern=c.P_ATM_PA, T_extern=self.state.T_exhaust_manifold, R_extern=c.R_SPECIFIC_EXHAUST, g_extern=c.GAMMA_EXHAUST,
-            is_intake=False
+            rpm=self.sensors.rpm, is_intake=False
         )
         dm_e = dm_e_raw * dt
 
         # 3. Fuel Calculation (Scale by step_size)
         dm_f = 0.0
-        if ecu_outputs.injector_on:
+        if ecu_outputs.injector_on and self.sensors.rpm < c.RPM_LIMIT:
             fuel_cc_per_subdeg = c.INJECTOR_FLOW_CC_PER_MIN * step_size/ (current_rpm_safe * 360.0)
             dm_f = fuel_cc_per_subdeg * c.FUEL_DENSITY_KG_CC 
             self.temp_total_dm_f += dm_f
@@ -796,32 +816,42 @@ class EngineModel:
         
         return 0.0
 
-    def _update_mechanical_dynamics(self, CAD, stroke, cyl_P_previous, cyl_P, dV):
+    def _update_mechanical_dynamics(self, CAD, cyl_P_start, cyl_P_end, dv):
         """Preserves torque integration and RPM physics."""
-        P_avg = (cyl_P_previous + cyl_P) / 2.0
+        P_avg = (cyl_P_start + cyl_P_end) / 2.0
         # delta_work_J = P_avg * dV
         # P_ambient is the pressure pushing on the "back" of the piston
-        delta_work_J = (P_avg - c.P_ATM_PA) * dV
+        delta_work_J = (P_avg - c.P_ATM_PA) * dv
         
-        t_ind_cyl = pf.calc_indicated_torque_step(delta_work_J, stroke)
+        t_ind_cyl = pf.calc_indicated_torque_step(delta_work_J)
+        self.cyl.torque_indicated_history[CAD] = t_ind_cyl
         
         # after 720 the cylinder buffer is full and simulates 4 cylinders
-        self.cyl.torque_indicated_history[CAD] = t_ind_cyl
+        ## PER DEGREE METHOD
         t_total_indicated = (
             self.cyl.torque_indicated_history[CAD] +
             self.cyl.torque_indicated_history[(CAD + 180) % 720] +
             self.cyl.torque_indicated_history[(CAD + 360) % 720] +
             self.cyl.torque_indicated_history[(CAD + 540) % 720]
         )
+        self.state.torque_indicated = t_total_indicated
+        self.state.torque_indicated_history[CAD] = t_total_indicated 
+        
+        ## NP.ROLL METHOD
+        # self.state.torque_indicated_history = (
+        #     self.cyl.torque_indicated_history +
+        #     np.roll(self.cyl.torque_indicated_history, 180) +
+        #     np.roll(self.cyl.torque_indicated_history, 360) +
+        #     np.roll(self.cyl.torque_indicated_history, 540)
+        # )
+        # self.state.torque_indicated = self.state.torque_indicated_history[CAD]
 
         
-        # self.state.torque_friction = pf.calc_friction_torque_per_degree(self.sensors.rpm, self.sensors.CLT_C)
-        self.state.torque_indicated = t_total_indicated
-        self.state.torque_friction = self._calc_friction_torque_per_degree(CAD, self.sensors.rpm, self.sensors.CLT_C, self.cyl.log_P)
-        self.state.torque_brake = self.state.torque_indicated - self.state.torque_friction
+        torque_friction = self._calc_friction_torque_per_degree(CAD, self.sensors.rpm, self.sensors.CLT_C, self.cyl.log_P)
+        self.state.torque_friction = -abs(torque_friction)
+        self.state.torque_brake = self.state.torque_indicated + self.state.torque_friction
         
         # store values in history arrays
-        self.state.torque_indicated_history[CAD] = t_total_indicated 
         self.state.torque_friction_history[CAD] = self.state.torque_friction
         self.state.torque_brake_history[CAD] = self.state.torque_brake
         self.state.torque_net_history[CAD] = self.state.torque_brake - self.state.wheel_load
@@ -834,6 +864,7 @@ class EngineModel:
             
         if self.motoring_rpm > 0.0:  # engine is in motoring mode for testing
             rpm_delta = self.motoring_rpm - next_rpm
+            self.sensors.rpm = self.motoring_rpm # Force steady state for the next step
 
             # Calculate exactly how many Nm are needed to fix that error in ONE dt
             # Formula: T = J * alpha -> T = J * (delta_omega / dt)
@@ -841,14 +872,14 @@ class EngineModel:
             required_governor_torque = (c.MOMENT_OF_INERTIA * delta_omega) / dt
 
             # Apply it unconditionally (Motor or Brake)
-            self.state.torque_net_history[CAD] += required_governor_torque
-            self.state.torque_governor_history[CAD] = required_governor_torque
-            self.sensors.rpm = self.motoring_rpm # Force steady state for the next step
+            self.state.torque_governor_history[CAD]  = required_governor_torque
+            self.state.torque_net_history[CAD]      += required_governor_torque
         else:   
-            self.sensors.rpm = max(c.CRANK_RPM, next_rpm)       
+            self.sensors.rpm = max(c.CRANK_RPM, next_rpm)
+            self.state.torque_governor_history[CAD] = 0.0       
         
         self.sensors.rpm_history[CAD] = self.sensors.rpm
-        self.state.power_history[CAD] = self.state.torque_brake * self.sensors.rpm / 9549.3
+        self.state.power_history[CAD] = self.state.torque_brake * self.sensors.rpm / 9549.3 
         
         # rpm_delta = self.sensors.rpm_history[CAD - 1] - self.sensors.rpm
         # if CAD == 719:
@@ -888,15 +919,16 @@ class EngineModel:
         #     print(f"  EVO θ:{CAD:3d} air_mass:{self.cyl.air_mass_kg:.2e} fuel_mass:{self.cyl.fuel_mass_kg:.2e} total_mass:{self.cyl.total_mass_kg:.2e} "
         #           f"T_cyl:{self.cyl.T:.0f}K ")
     
-    def _handle_step_end(self, CAD, ecu):
-        if CAD >= 719.0:
-            self._handle_cycle_end(ecu)
-            self._cycle_count += 1
-            
-        if CAD == int(self.valves.intake.close_angle):
+    def _handle_step_end(self, CAD, ecu):           
+        if CAD == 0:
+            self.cyl.air_mass_at_TDC = self.cyl.air_mass_kg
+        elif CAD == int(self.valves.intake.close_angle):
             self.cyl.air_mass_at_IVC = self.cyl.air_mass_kg
             self.cyl.fuel_mass_at_IVC = self.cyl.fuel_mass_kg
             self.cyl.total_mass_at_IVC = self.cyl.total_mass_kg
+        elif CAD >= 719.0:
+            self._handle_cycle_end(ecu)
+            self._cycle_count += 1
             
         # if CAD == 372.0:
         #     calculated_P = (self.cyl.total_mass_kg * self.cyl.R_specific_blend * self.cyl.T_curr) / self.cyl.V_list[CAD]
@@ -961,8 +993,9 @@ class EngineModel:
             self.sensors.knock = False
             self.sensors.knock_intensity = 0.0
             
-        # update work done log
+        # update cycle work done and Mean Effective Pressures
         self._calculate_cycle_work()
+        self._calculate_cycle_MEP()
   
         # print(
         #     f"    DEBUG step end: CAD={self._cycle_count}/{CAD} "
@@ -1021,7 +1054,7 @@ class EngineModel:
         Calculates friction for all 4 cylinders based on their specific 
         position in the 720 degree cycle.
         """
-        total_friction_torque = 0
+        t_fric_4cyl = 0
         
         # Offsets for a 4-cylinder engine
         offsets = [0, 180, 360, 540]
@@ -1033,20 +1066,46 @@ class EngineModel:
             
             # Calculate friction for THIS cylinder at THIS specific position
             t_fric_cyl = pf.calc_single_cylinder_friction(cyl_cad, rpm, cyl_p, clt)
-            total_friction_torque += t_fric_cyl
+            t_fric_4cyl += t_fric_cyl
         
         global_parasitic = pf.calc_engine_core_friction(rpm=rpm, clt=clt)
                 
-        self.state.torque_friction_piston = total_friction_torque
-        self.state.torque_friction_piston_history[CAD] = total_friction_torque
+        self.state.torque_friction_piston = t_fric_4cyl
+        self.state.torque_friction_piston_history[CAD] = t_fric_4cyl
         
         self.state.torque_friction_global = global_parasitic
         self.state.torque_friction_global_history[CAD] = global_parasitic
         
 
          
-        return total_friction_torque + global_parasitic
+        return t_fric_4cyl + global_parasitic
         
+    
+    
+    # ----------------------------------------------------------------------
+    def _calculate_cycle_MEP(self):
+        """
+        Calculate Mean Effective Pressure and it's variations
+        """
+        
+        v_disp = c.V_DISPLACED * c.NUM_CYL
+        
+        # 1. IMEP (Indicated): Work from gas pressure before friction
+        self.state.IMEP_net = (self.state.work_net_indicated_j / v_disp) / 1e5
+        self.state.IMEP_gross = (self.state.work_gross_indicated_j / v_disp) / 1e5
+
+        # 2. FMEP (Friction): Pressure "lost" to mechanical friction
+        self.state.FMEP = (self.state.work_friction_j / v_disp) / 1e5
+        
+        # 3. Pumping MEP (The 'cost' of breathing)
+        self.state.PMEP = (self.state.work_pumping_j / v_disp) / 1e5
+
+        # 4. BMEP (Brake): Actual pressure available to do work at the crankshaft
+        # BMEP = IMEP - FMEP
+        self.state.BMEP = (self.state.IMEP_net + self.state.FMEP)
+
+        # 5. Mechanical Efficiency
+        self.state.mechanical_efficiency = self.state.BMEP / self.state.IMEP_net if self.state.IMEP_net > 0 else 0
     
     # ----------------------------------------------------------------------
     def _calculate_cycle_work(self):
@@ -1055,43 +1114,48 @@ class EngineModel:
         Integrates P*dV across the four strokes to find the work done in Joules.
         Positive = Engine producing work. Negative = Engine consuming energy.
         """
-        # 1. Calculate base work for the master cylinder
-        # work = P * dV (Joules per degree)
-        w_cyl = self.cyl.log_P * self.cyl.dV_list
+
+        # 1. Base work for ONE cylinder (Array of 720 values)
+        # Unit: Joules per degree
+        cyl_P_start = self.cyl.log_P
+        cyl_P_end = np.roll(self.cyl.log_P, -1)
         
-        # 2. Create the Engine-Level work_deg array
-        # We sum 4 versions of the array, each shifted by the firing interval (180 deg)
-        engine_work_deg = (
-            w_cyl + 
-            np.roll(w_cyl, 180) + 
-            np.roll(w_cyl, 360) + 
-            np.roll(w_cyl, 540)
+        P_avg = (cyl_P_start + cyl_P_end) / 2.0
+
+        w_cyl_array = (P_avg - c.P_ATM_PA) * self.cyl.dV_list
+        
+        # 2. Engine-Level work array (Array of 720 values)
+        # This represents the total instantaneous work flux of all 4 cylinders
+        # Use this for your engine_work_deg history if needed
+        work_engine_720 = (
+            w_cyl_array + 
+            np.roll(w_cyl_array, 180) + 
+            np.roll(w_cyl_array, 360) + 
+            np.roll(w_cyl_array, 540)
         )
         
-        # 3. Calculate Stroke Totals for the whole engine
-        # Note: Using the single cylinder sum * NUM_CYL is equivalent and faster
-        pumping_work = (np.sum(w_cyl[0:180]) + np.sum(w_cyl[540:720])) * c.NUM_CYL
-        compression  = np.sum(w_cyl[180:360]) * c.NUM_CYL
-        expansion    = np.sum(w_cyl[360:540]) * c.NUM_CYL
-    
-        # Gross and Net Indictaed Work
-        work_net_indicated   = np.sum(w_cyl) * c.NUM_CYL
-        work_gross_indicated = (np.sum(w_cyl[180:360]) + np.sum(w_cyl[360:540])) * c.NUM_CYL
+        # 3. CONVERT ARRAYS TO SCALARS (The "Totals" for the cycle)
+        # We multiply by NUM_CYL to account for all cylinders
+        # These are single numbers (Joules)
+        pumping_work_scalar     = (np.sum(w_cyl_array[0:180]) + np.sum(w_cyl_array[540:720])) * c.NUM_CYL
+        compression_work_scalar = np.sum(w_cyl_array[180:360]) * c.NUM_CYL
+        expansion_work_scalar   = np.sum(w_cyl_array[360:540]) * c.NUM_CYL
         
-        # if self.state.current_theta >= 719:
-        #     print(
-        #         f"DEBUG WORK: cyc:{self._cycle_count:.0f} "
-        #         f"rpm_avg:{np.mean(self.sensors.rpm_history):.0f} "
-        #         f"work_pumping_j:{pumping_work:.2f} "
-        #         f"work_compression_j:{compression:.2f} "
-        #         f"work_expansion_j:{expansion:.2f} "
-        #         f"net_indicated_work_j:{np.sum(engine_work_deg):.2f} "
-        #     )
+        # Gross and Net (Scalars) excludes pumping losses
+        # Net Indicated is the sum of the WHOLE cycle
+        work_net_indicated_scalar = np.sum(work_engine_720) / 1.0 
+        work_gross_indicated_scalar = (np.sum(w_cyl_array[180:360]) + np.sum(w_cyl_array[360:540])) * c.NUM_CYL
         
-        self.state.work_pumping_j = pumping_work
-        self.state.work_compression_j = compression
-        self.state.work_expansion_j = expansion
-        self.state.work_net_indicated_j = work_net_indicated
-        self.state.work_gross_indicated_j = work_gross_indicated
-        self.state.work_deg = engine_work_deg
+        # 4. Store SCALARS in state
+        self.state.work_pumping_j = pumping_work_scalar
+        self.state.work_compression_j = compression_work_scalar
+        self.state.work_expansion_j = expansion_work_scalar
+        self.state.work_net_indicated_j = work_net_indicated_scalar
+        self.state.work_gross_indicated_j = work_gross_indicated_scalar
+      
+        self.state.work_friction_j = np.sum(self.state.torque_friction_history) * (np.pi / 180.0)
         
+        
+        # Store the ARRAY only if you need to plot the "Work per degree" graph
+        self.state.work_engine_720 = work_engine_720 
+

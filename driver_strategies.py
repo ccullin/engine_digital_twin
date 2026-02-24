@@ -20,14 +20,14 @@ if TYPE_CHECKING:
 # =============================================================================
 
 class BaseStrategy:
-    start_rpm = 900
         
     def driver_update(self, driver):
         """Return (tps, load, air pressure)"""
         tps = 0.0
         load = 0.0
         pressure = c.P_ATM_PA
-        return tps, load, pressure
+        impulse_target_rpm = 0.0
+        return tps, load, pressure, impulse_target_rpm
  
     def get_telemetry(self):
         """Return dict of extra keys for dashboard"""
@@ -36,6 +36,47 @@ class BaseStrategy:
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
         """Called every cycle — delegate to manager for shared realtime loop"""
         pass  # default: nothing
+    
+    def dump_telemetry(self, current_cycle=None, data=None):
+        sensors, telem, ecu_outputs = data
+        sensors: EngineSensors
+        telem: EngineTelemetry
+        ecu_outputs: EcuOutput
+        
+        
+        
+        # We target the window where the 'Ghost Air' is entering
+        print(f"\n--- CYCLE {current_cycle} VE ANALYSIS ---")
+        print(f"{'CAD':>4} | {'T_cyl':>6}  | {'P_cyl':>8} | {'P_man':>8} | {'dm_in':>11} | {'dm_ex':>11} | {'dm_tot':>11}  | {'Total_m':>11} | {'Cd':>6} | {'IVC_mass':>10} ")
+        
+
+        # Scan from BDC to IVC
+        for cad in range(720):
+            cad_in_range = (0 < cad <=30) or (180 <= cad <= 240) or (690 <= cad <= 720)
+            if cad_in_range:
+                p_cyl = telem.cyl.log_P[cad] / 1000.0
+                p_man = telem.state.map_history[cad] / 1000.0
+                dm_in = telem.cyl.dm_in_history[cad] * 1e6 # Convert to mg
+                dm_ex = telem.cyl.dm_ex_history[cad] * 1e6
+                dm_tot = dm_in + dm_ex
+                m_tot = telem.cyl.total_mass_history[cad] * 1e6
+                Cd = telem.cyl.Cd_in_history[cad]
+                m_TDC = telem.cyl.air_mass_at_TDC 
+                m_IVC = (telem.cyl.air_mass_at_IVC - m_TDC)
+                T_cyl = telem.cyl.log_T[cad] 
+                T_wall = telem.cyl.T_wall
+                clt_c = sensors.CLT_C
+                iat_k = sensors.IAT_K
+            
+                
+                # Print specifically where flow is entering (dm > 0) 
+                # despite pressure being equalizing/reversing
+                if dm_in > 0 or dm_ex < 0 or cad % 5 == 0:
+                    print(f"{cad:4d} | {T_cyl:7.2f}K | {p_cyl:7.2f}kPa | {p_man:7.2f}kPa | {dm_in:9.4f}mg | {dm_ex:9.4f}mg | {dm_tot:9.4f}mg  | {m_tot:9.4f}mg | {Cd:7.2f} | {m_IVC:9.6f}")
+        ideal_air_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
+        ve = (m_IVC / ideal_air_mass) * 100
+        print(f"mass_TDC:{m_TDC:9.6f}kg ideal_mass:{ideal_air_mass:9.6f}kg")
+        print(f"FINAL CYCLE VE: {ve:.2f}% T_wall:{T_wall:.1f} CLT:{clt_c:.1f}C IAT:{iat_k:.1f}K")
 
 
 class IdleStrategy(BaseStrategy):
@@ -49,7 +90,8 @@ class IdleStrategy(BaseStrategy):
         tps = 0.0
         load = 0.0
         pressure = c.P_ATM_PA
-        return tps, load, pressure
+        impulse_target_rpm = 0.0
+        return tps, load, pressure, impulse_target_rpm
 
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
         ax_top, ax_topright, ax_bottomleft, ax_bottomright = dashboard_manager.get_strategy_axes()
@@ -197,10 +239,10 @@ class IdleStrategy(BaseStrategy):
             "",
             "ENERGY AUDIT (Joules):",
             f"Expansion (Ind):{engine_data.state.work_expansion_j:+8.1f} J",
-            f"Friction Loss:  {engine_data.state.friction_work_j:8.1f} J",
+            f"Friction Loss:  {engine_data.state.work_friction_j:8.1f} J",
             f"Pumping Loss:   {engine_data.state.work_pumping_j:8.1f} J",
             "----------------------------",
-            f"NET BALANCE:    {engine_data.state.net_work_j + engine_data.state.friction_work_j:+8.1f} J",
+            f"NET BALANCE:    {engine_data.state.work_engine_720 + engine_data.state.work_friction_j:+8.1f} J",
         ]
         
         # Diagnosis Logic
@@ -208,7 +250,7 @@ class IdleStrategy(BaseStrategy):
             lines.append("DIAG:  EXTREME LEAN / STALL")
         elif sensors.rpm < target_rpm - 100 and valve_pct > 95:
             lines.append("DIAG:  INSUFFICIENT AIR (MAXED)")
-        elif abs(afr_error) < 0.5 and (engine_data.state.net_work_j + engine_data.state.friction_work_j) < 0:
+        elif abs(afr_error) < 0.5 and (engine_data.state.work_engine_720 + engine_data.state.work_friction_j) < 0:
             lines.append("DIAG:  HIGH MECHANICAL DRAG")
         else:
             lines.append("DIAG:  IDLE STABLE")
@@ -228,7 +270,8 @@ class WotStrategy(BaseStrategy):
         tps = 100.0
         load = 0.0
         pressure = c.P_ATM_PA
-        return tps, load, pressure
+        impulse_target_rpm = 0.0
+        return tps, load, pressure, impulse_target_rpm
     
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
         axes = dashboard_manager.get_strategy_axes()
@@ -292,7 +335,7 @@ class WotStrategy(BaseStrategy):
             # --- 3. Bottom Left: Cumulative Work ---
             plot3.clear()
             plot3.set_title("Cumulative Work Trace")
-            plot3.plot(theta_vec, engine_data.state.work_deg, color='blue')
+            plot3.plot(theta_vec, engine_data.state.work_engine_720, color='blue')
             plot3.set_ylabel("Joules")
             plot3.grid(True, alpha=0.3)
 
@@ -332,7 +375,7 @@ class WotStrategy(BaseStrategy):
         self.P_peak_angle_line.set_data(self.cycle_indices, self.P_peak_angle_data)
 
         # --- 5. THE TABLE (LINE Variable) ---
-        net_balance = engine_data.state.net_work_j + engine_data.state.friction_work_j
+        net_balance = engine_data.state.work_engine_720 + engine_data.state.work_friction_j
         
         lines = [
             f"WOT POWER AUDIT - RPM: {sensors.rpm:4.0f}",
@@ -343,9 +386,9 @@ class WotStrategy(BaseStrategy):
             "----------------------------",
             "ENERGY BREAKDOWN (J):",
             f"Indicated Work: {engine_data.state.indicated_work_j:8.1f} J",
-            f"Friction Loss:  {engine_data.state.friction_work_j:8.1f} J",
+            f"Friction Loss:  {engine_data.state.work_friction_j:8.1f} J",
             f"(Pumping Loss): {engine_data.state.work_pumping_j:8.1f} J",
-            f"Brake Work:     {engine_data.state.net_work_j:+8.1f} J",
+            f"Brake Work:     {engine_data.state.work_engine_720:+8.1f} J",
             "----------------------------",
             "STATUS: " + ("ACCELERATING" if net_balance > 0 else "STALLED/DRAGGING")
         ]
@@ -358,15 +401,16 @@ class MotoringStrategy(BaseStrategy):
     Motor the engine with spark and fuel disabled
     """
     
-    def __init__(self):
-        self.start_rpm = 3000
-        self.motoring_enabled = True
+    def __init__(self, rpm=None):
+        super().__init__()
+        self.start_rpm = rpm if rpm is not None else 3000
+        self.impulse_target_rpm = self.start_rpm
         
     def driver_update(self, driver):
         tps = 100
         load = 0.0
         pressure = c.P_ATM_PA
-        return tps, load, pressure
+        return tps, load, pressure, self.impulse_target_rpm
    
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
         # Unpack the two axes from the dashboard manager
@@ -460,7 +504,7 @@ class MotoringStrategy(BaseStrategy):
         # Cumulative sum gives the work profile across the 720 degrees
         if log_p is not None and log_v is not None:
             dv = np.diff(log_v, prepend=log_v[0])
-            work_array = engine_data.state.work_deg
+            work_array = engine_data.state.work_engine_720
             log_cad = engine_data.theta_list 
             v_liters = log_v * 1000.0
             p_bar = log_p / 1e5
@@ -546,7 +590,7 @@ class MotoringStrategy(BaseStrategy):
         if Cd_i_vec is not None and Cd_e_vec is not None:
             self.Cd_i_line.set_data(theta_vec, Cd_i_vec)
             self.Cd_e_line.set_data(theta_vec, Cd_e_vec)
-            self.ax_Cd.set_ylim(0.5, max(np.max(Cd_i_vec), np.max(Cd_e_vec)) * 1.5)
+            self.ax_Cd.set_ylim(0.0, max(np.max(Cd_i_vec), np.max(Cd_e_vec)) * 1.5)
             
             # Calculate the points
             ivo_1mm, ivc_1mm = self.get_lift_timing(theta_vec, lift_int_vec, threshold=1.0) # 0.001m = 1mm
@@ -596,8 +640,8 @@ class MotoringStrategy(BaseStrategy):
             
 
         # === Energy Audit Overlay (Bottom Left Table) ===
-        net_work = engine_data.state.net_work_j
-        fric_work = engine_data.state.friction_work_j
+        fric_work = engine_data.state.work_friction_j
+        net_work = engine_data.state.work_net_indicated_j - fric_work
         # total_balance = net_work + fric_work
 
         # lines = [
@@ -625,18 +669,16 @@ class MotoringStrategy(BaseStrategy):
         # ]
         
         # --- Additional Calculations ---
-        # V_disp_m3 = 0.0021 / 4  # Displacement per cylinder for 2.1L 4-cyl
-        V_disp_m3 = c.V_DISPLACED
-        rho_air = c.P_ATM_PA / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
-        # rho_air = 1.225         # Standard air density (or use your ambient model)
-        mass_ideal = V_disp_m3 * rho_air
-        # trapped_mass should be captured at IVC in your cycle update        
-        vol_eff = (engine_data.cyl.air_mass_at_IVC / mass_ideal) * 100 
-        print(f"DEBUG motoring: vol_eff:{vol_eff} air_mass:{engine_data.cyl.air_mass_kg}  mass_ideal:{mass_ideal}")
+        air_mass_ideal = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
+        # trapped_mass should be captured at IVC in your cycle update  
+        mass_IVC = engine_data.cyl.air_mass_at_IVC
+        mass_TDC = engine_data.cyl.air_mass_at_TDC      
+        vol_eff = ((mass_IVC - mass_TDC) / air_mass_ideal) * 100 
+        print(f"DEBUG motoring: vol_eff:{vol_eff} air_mass:{engine_data.cyl.air_mass_at_IVC}  mass_ideal:{air_mass_ideal}")
 
         # Mean Effective Pressures (in Bar)
-        imep_net = (engine_data.state.work_compression_j + engine_data.state.work_expansion_j) / V_disp_m3 / 1e5
-        pmep = engine_data.state.work_pumping_j / V_disp_m3 / 1e5
+        imep_net = (engine_data.state.work_compression_j + engine_data.state.work_expansion_j) / c.V_DISPLACED / 1e5
+        pmep = engine_data.state.work_pumping_j / c.V_DISPLACED / 1e5
 
         # --- Updated Table Lines ---
         lines = [
@@ -659,7 +701,7 @@ class MotoringStrategy(BaseStrategy):
             "----------------------------",
             
             # --- Final Output ---
-            f"Brake Work:    {net_work:+8.1f} J",
+            f"Brake Work:    {net_work:8.1f} J",
         ]
         
         # Status Logic
@@ -746,8 +788,9 @@ class RoadtestStrategy(BaseStrategy):
         tps = self.tps_profile[cycle_idx]
         load = self.load_profile[cycle_idx]
         pressure = self.ambient_pressure_pa[cycle_idx]
+        impulse_target_rpm = 0.0
 
-        return tps, load, pressure
+        return tps, load, pressure, impulse_target_rpm
 
     def get_telemetry(self):
         idx = getattr(self, 'current_cycle_idx', 0)
@@ -824,7 +867,486 @@ class RoadtestStrategy(BaseStrategy):
 
         dashboard_manager.draw()
 
+class ImpulseDynoStrategy(BaseStrategy):
+    """
+    A full rpm sweep impulse dyno
+    """
+    
+    DYNO_START_RPM = 1000
+    DYNO_FINISH_RPM = c.RPM_LIMIT
+    
+    def __init__(self, rpm=None, rl_dyno_mode=False):
+        super().__init__()
+    
+        self.start_rpm = rpm if rpm is not None else 900
+        
+        # impulse dyno values
+        self.rpm_range = np.arange(DynoStrategy.DYNO_START_RPM, DynoStrategy.DYNO_FINISH_RPM + 1, 100)
+        rpm_steps = len(self.rpm_range)
+        self.rpm_index = 0
+        self.governor_torque_data = np.zeros(rpm_steps)
+        self.power_data = np.zeros(rpm_steps)
+        self.dyno_complete = False
+        
+        # rl support
+        self.rl_dyno_mode = rl_dyno_mode
+        self.external_target_rpm = 0.0  # Controlled by RL
+        self.force_next_step = False       # Flag for RL to trigger data capture
+ 
+        # data for Dyno Chart plot
+        self.line_torque = None
+        self.line_power = None
+        
+        #plot 2 - 4
+        self.pmep_data = []
+        self.fmep_data = []
+        self.ve_data = []
+        self.Cd_i_data = []
+        self.Cd_e_data = []
+        
+        #plot4B
+        self.fric_cyl_data = []
+        self.fric_global_data = []
+        
+        #plot4C stacked bars
+        self.t_fric_stack = []
+        self.t_fric_piston_stack = []
+        self.t_fric_global_stack = []
+        self.t_inidcated_stack = []
+        
+    
+    def driver_update(self, driver):
+        tps = 100.0 # always WOT in dyno mode.
+        load = 0.0 # no load is needed for an impulse dyno
+        ambient_pressure = c.P_ATM_PA
+        
+        if self.rl_dyno_mode:
+            # inject RL target RPM
+            impulse_target_rpm = self.external_target_rpm
+        else:
+            # interate through rpm_range
+            impulse_target_rpm = self.set_target_rpm()
+        
+        self.record_torque(driver) # need to set the rpm and record torque on the next engine cycle
+           
+        # print(f"DEBUG DRIVER UPDATE {tps} {load} {ambient_pressure} {impulse_target_rpm}")
+        return tps, load, ambient_pressure, impulse_target_rpm
+        
+    def set_target_rpm(self):
+        rpm = self.rpm_range[self.rpm_index]
+        return rpm
+    
+    def record_torque(self, driver):
+        if driver.cycle %3 == 0 and driver.cycle > 0 and driver.theta == 719:
+            self.governor_torque_data[self.rpm_index] = abs(driver.governor_torque) # index was updated for next rpm
+            self.power_data[self.rpm_index] = abs(driver.governor_torque) * self.rpm_range[self.rpm_index] / 9548.8
+            if self.rpm_index < len(self.rpm_range) - 1:
+                self.rpm_index += 1
+            else:
+                self.dyno_complete = True
 
+
+        
+    # def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
+    #     """Standardized update called every cycle by the main loop"""
+    #     axes = dashboard_manager.get_strategy_axes()
+    #     if axes is None or data is None:
+    #         return
+        
+    #     ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = axes
+    #     plot1 = ax_topleft
+    #     plot2 = ax_topright
+    #     plot3 = ax_bottomleft
+    #     plot4 = ax_bottomright
+        
+    #     sensors, engine_data, ecu_outputs = data
+    #     sensors: EngineSensors
+    #     engine_data: EngineTelemetry
+    #     ecu_outputs: EcuOutput
+
+    #     # === INITIALIZE ARTISTS (Standard Pattern) ===
+    #     if not hasattr(self, 'artists_created'):
+    #         self._setup_plots(plot1, plot2, plot3, plot4)
+    #         self.artists_created = True
+
+    #     rpms = self.rpm_range
+        
+    #     # 1. Update Plot 1 (Power Curve)
+    #     active_torques = self.governor_torque_data
+    #     active_powers = self.power_data
+    
+    #     self.line_torque.set_data(rpms, active_torques)
+    #     self.line_power.set_data(rpms, active_powers)
+    #     plot1.set_xlim(min(rpms)-200, max(rpms)+500)
+
+  
+    #     if current_cycle %3 == 0 and current_cycle > 0 and not self.dyno_complete:
+    #         # 2. Update Plot 2 (Losses)
+    #         # Assuming you've collected these in lists during the sweep
+    #         current_PMEP = -(engine_data.state.work_pumping_j / (c.V_DISPLACED * c.NUM_CYL * 1e5))
+    #         current_FMEP = engine_data.state.work_friction_j / (c.V_DISPLACED * c.NUM_CYL * 1e5)
+    #         self.pmep_data.append(current_PMEP)
+    #         self.fmep_data.append(abs(current_FMEP))
+        
+    #         current_len = len(self.pmep_data)
+    #         # Slice the rpms to match the data we actually have
+    #         rpms_view = rpms[:current_len]
+            
+    #         self.line_pmep.set_data(rpms_view, self.pmep_data)
+    #         self.line_fmep.set_data(rpms_view, self.fmep_data)
+    #         plot2.set_ylim(0, max(max(self.fmep_data, default=1), 2))
+    #         plot2.set_xlim(min(rpms), max(rpms))
+
+    #         # Update Plot 3 (Breathing)
+    #         ideal_air_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
+    #         current_ve = (engine_data.cyl.air_mass_at_IVC - engine_data.cyl.air_mass_at_TDC) / ideal_air_mass
+    #         self.ve_data.append(current_ve * 100)
+        
+    #         plot3.set_xlim(min(rpms), max(rpms))
+    #         self.line_ve.set_data(rpms_view, self.ve_data)
+
+    #         # PLOT 4B (Friction)
+    #         self.fric_cyl_data.append(np.mean(engine_data.state.torque_friction_piston_history))
+    #         self.fric_global_data.append(np.mean(engine_data.state.torque_friction_global_history))
+    #         self.line_fric_cyl.set_data(rpms_view, self.fric_cyl_data)
+    #         self.line_fric_global.set_data(rpms_view, self.fric_global_data)
+            
+    #         # 1. Find the peak in each list (or 0 if empty)
+    #         peak_cyl = max(self.fric_cyl_data, default=0)
+    #         peak_global = max(self.fric_global_data, default=0)
+
+    #         # 2. Find the highest of the two, scale it, and ensure a minimum of 2.0
+    #         y_limit = max(max(peak_cyl, peak_global) * 1.1, 2.0)
+
+    #         plot4.set_ylim(0, y_limit)
+    #         plot4.set_xlim(min(rpms), max(rpms))
+
+        
+        
+    #     # PLOT 4A (Isentropic Cd values)
+    #     # self.line_Cd_i.set_data(np.arange(720), engine_data.cyl.Cd_in_history)
+    #     # self.line_Cd_e.set_data(np.arange(720), engine_data.cyl.Cd_ex_history)
+
+        
+        
+    #     # 4. Update the overlay text box
+    #     max_torque = np.max(active_torques)
+    #     max_t_idx = np.argmax(active_torques)
+    #     max_t_rpm = rpms[max_t_idx]
+    #     max_power = np.max(active_powers)
+    #     max_p_idx = np.argmax(active_powers)
+    #     max_p_rpm = rpms[max_p_idx]
+    #     dyno_str = (
+    #         f"Dyno report:\n"
+    #         f"Max Torque: {max_torque:5.0f} Nm  at: {max_t_rpm:.0f} rpm\n"
+    #         f"Max Power: {max_power:5.1f} kW  at: {max_p_rpm:.0f} rpm\n"
+    #     )
+        
+    #     if not hasattr(self, 'dyno_text'):
+    #         self.dyno_text = plot3.text(0.5, 0.85, dyno_str, 
+    #                                             transform=plot1.transAxes,
+    #                                             fontsize=9, family='monospace',
+    #                                             ha='center', va='top',
+    #                                             bbox=dict(boxstyle="round", alpha=0.6, facecolor='white'))
+    #     else:
+    #         self.dyno_text.set_text(dyno_str)
+        
+        
+    #     # === UPDATE TEXT OVERLAY ===
+    #     lines = []
+    #     dashboard_manager.update_strategy_overlay(lines)
+    #     dashboard_manager.draw()
+    
+    # def _setup_plots(self, plot1, plot2, plot3, plot4):
+        
+    #     # --- PLOT1 DYNO TORQUE and POWER CHART
+    #     plot1.clear()
+    #     plot1.set_title("Steady-State Dyno Curve")
+    #     plot1.set_xlabel("RPM")
+    #     plot1.set_ylabel("Torque (Nm)", color='g')
+    #     plot1.set_ylim(100, 260)
+    #     plot1.tick_params(axis='y', labelcolor='g')
+    #     plot1.grid(True, alpha=0.3)
+
+    #     self.line_torque, = plot1.plot([], [], color='green', linewidth=2, markersize=8, label='Torque (Nm)', ls='-')
+        
+    #     plot1.legend(loc='upper left')
+
+    #     # Create twin axis ONCE and store it
+    #     plot1_ax2 = plot1.twinx()
+    #     plot1_ax2.set_ylabel("Power (kW)", color='magenta')
+    #     plot1_ax2.set_ylim(10, 90)
+    #     plot1_ax2.tick_params(axis='y', labelcolor='magenta')
+
+    #     self.line_power, = plot1_ax2.plot([], [], color='magenta', linewidth=2, markersize=8, label='Power (kW)', ls='dashed')
+        
+    #     plot1_ax2.legend(loc='upper right')
+
+        
+    #     # PLOT 2: Internal Losses (PMEP and FMEP)
+    #     plot2.clear()
+    #     plot2.set_title("Pumping & Friction Losses")
+    #     plot2.set_xlabel("RPM")
+    #     plot2.set_ylabel("Pressure (Bar)")
+    #     plot2.grid(True, alpha=0.3)
+
+    #     self.line_pmep, = plot2.plot([], [], label='PMEP (Pumping)', color='orange', lw=2)
+    #     self.line_fmep, = plot2.plot([], [], label='FMEP (Friction)', color='red', lw=1, ls='--')
+        
+    #     plot2.legend(loc='upper left', fontsize='small')
+
+    #     # PLOT 3: Breathing Dynamics (VE)
+    #     plot3.clear()
+    #     plot3.set_title("Breathing Dynamics")
+    #     plot3.set_xlabel("RPM")
+    #     plot3.set_ylabel("VE (%)")
+    #     plot3.set_ylim(60, 110) # Typical VE range
+    #     self.line_ve, = plot3.plot([], [], label='VE %', color='blue', lw=2)
+        
+    #     # Twin axis for Mach Number and Cd values
+    #     # self.ax_mach = plot3.twinx()
+    #     # self.ax_mach.set_ylabel("Mach Number and Cd value", color='purple')        
+    #     # self.ax_mach.set_ylim(0, 1.0) # Mach 1.0 is the physical limit
+    #     # self.ax_mach.axhline(0.45, color='purple', alpha=0.2, ls='--') # The "Cliff" threshold
+    #     # self.line_mach, = self.ax_mach.plot([], [], label='Intake Mach', color='purple', lw=1, ls=':')
+        
+    #     # # PLOT 4A: Cd values
+    #     # plot4.clear()
+    #     # plot4.set_title("Isentropic Cd factors")
+    #     # plot4.set_xlabel("CAD")
+    #     # plot4.set_ylabel("Cd")
+    #     # plot4.set_xlim(0, 720)
+    #     # plot4.set_ylim(0, 1.0) # Mach 1.0 is the physical limit
+
+    #     # self.line_Cd_i, = plot4.plot([], [], label='Intake Cd', color='blue')
+    #     # self.line_Cd_e, = plot4.plot([], [], label='Exhaust Cd', color='cyan')
+        
+    #     # plot4.legend(loc='upper right', fontsize='small')
+
+    #     # PLOT 4B: Friction
+    #     plot4.clear()
+    #     plot4.set_title("Friction")
+    #     plot4.set_xlabel("RPM")
+    #     plot4.set_ylabel("Friction(Nm)")
+
+    #     self.line_fric_cyl,    = plot4.plot([], [], label='Fric (Cylinder)', color='orange', lw=2)
+    #     self.line_fric_global, = plot4.plot([], [], label='Fric (Core)', color='red', lw=1, ls='--')
+        
+        
+    #     plot4.legend(loc='upper left', fontsize='small')
+  
+  
+    def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
+        """Standardized update called every cycle by the main loop"""
+        axes = dashboard_manager.get_strategy_axes()
+        if axes is None or data is None:
+            return
+        
+        ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = axes
+        plot1, plot2, plot3, plot4 = ax_topleft, ax_topright, ax_bottomleft, ax_bottomright
+        
+        sensors, engine_data, ecu_outputs = data
+        sensors: EngineSensors
+        engine_data: EngineTelemetry
+        ecu_outputs: EcuOutput
+        
+        # === INITIALIZE ARTISTS & DATA BUFFERS ===
+        if not hasattr(self, 'artists_created'):
+            self._setup_plots(plot1, plot2, plot3, plot4)
+            self.t_brake_stack = []
+            self.t_fric_stack = []
+            self.t_pump_stack = []
+            self.artists_created = True
+
+        rpms = self.rpm_range
+        active_torques = self.governor_torque_data
+        active_powers = self.power_data
+    
+        # 1. Update Plot 1 (Power Curve)
+        self.line_torque.set_data(rpms, active_torques)
+        self.line_power.set_data(rpms, active_powers)
+        plot1.set_xlim(min(rpms)-200, max(rpms)+500)
+
+        # 2. Process Stats (Every 3 cycles to maintain performance)
+        if current_cycle % 3 == 0 and current_cycle > 0 and not self.dyno_complete:
+            # --- CALCULATE LOSSES ---
+            # MEP values (Bar)
+            current_PMEP = -(engine_data.state.work_pumping_j / (c.V_DISPLACED * c.NUM_CYL * 1e5))
+            current_FMEP = engine_data.state.work_friction_j / (c.V_DISPLACED * c.NUM_CYL * 1e5)
+            self.pmep_data.append(current_PMEP)
+            self.fmep_data.append(abs(current_FMEP))
+        
+            current_len = len(self.pmep_data)
+            rpms_view = rpms[:current_len]
+            
+            # --- UPDATE PLOT 2 (MEP Lines) ---
+            self.line_pmep.set_data(rpms_view, self.pmep_data)
+            self.line_fmep.set_data(rpms_view, self.fmep_data)
+            plot2.set_ylim(0, max(max(self.fmep_data, default=1), 2.5))
+            plot2.set_xlim(min(rpms), max(rpms))
+
+            # --- UPDATE PLOT 3 (VE) ---
+            ideal_air_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
+            current_ve = (engine_data.cyl.air_mass_at_IVC - engine_data.cyl.air_mass_at_TDC) / ideal_air_mass
+            self.ve_data.append(current_ve * 100)
+            self.line_ve.set_data(rpms_view, self.ve_data)
+            plot3.set_xlim(min(rpms), max(rpms))
+
+            # --- UPDATE PLOT 4 (STACKED TORQUE BREAKDOWN) ---
+            # 1. Capture current torque components (Nm)
+            
+            t_brake = np.mean(engine_data.state.torque_brake_history)
+            t_fric_piston = abs(np.mean(engine_data.state.torque_friction_piston_history))
+            t_fric_global = abs(np.mean(engine_data.state.torque_friction_global_history))
+            t_indicated = np.mean(engine_data.state.torque_indicated_history)
+        
+            # Physics: Convert PMEP Bar to Torque Nm: T = (P * Vd) / (4 * pi)
+            t_pumping = (current_PMEP * 1e5 * (c.V_DISPLACED * c.NUM_CYL)) / (4 * np.pi)
+            
+            self.t_brake_stack.append(t_brake)
+            self.t_fric_stack.append(t_fric_piston + t_fric_global)
+            self.t_fric_piston_stack.append(t_fric_piston)
+            self.t_fric_global_stack.append(t_fric_global)
+            self.t_inidcated_stack.append(t_indicated)
+            self.t_pump_stack.append(t_pumping)
+
+            # 2. Redraw the stacked bar
+            plot4.clear()
+            plot4.set_title("Torque Breakdown (Stack)")
+            plot4.set_ylabel("Torque (Nm)")
+            plot4.grid(True, alpha=0.2, axis='y')
+            
+            # Calculate width based on sweep resolution
+            bar_width = (max(rpms) - min(rpms)) / len(rpms) * 0.9
+
+               
+            # Foundation Brake
+            plot4.bar(rpms_view, self.t_brake_stack, bar_width, label='Brake', color='green', alpha=0.8)
+            # Stack Friction (piston)
+            combined_bottom = np.array(self.t_brake_stack)
+            plot4.bar(rpms_view, self.t_fric_stack, bar_width, bottom=combined_bottom, label='Friction', color='red', alpha=0.7)
+            # Stack Friction (global)
+            combined_bottom = np.array(self.t_brake_stack) + np.array(self.t_fric_stack)
+            plot4.bar(rpms_view, self.t_pump_stack, bar_width, bottom=combined_bottom, label='Pumping', color='orange', alpha=0.7)
+            # Stack Pumping
+            # combined_bottom = np.array(self.t_brake_stack) + np.array(self.t_fric_piston_stack) + np.array(self.t_fric_global_stack)
+            # plot4.bar(rpms_view, self.t_pump_stack, bar_width, bottom=combined_bottom, label='Pumping', color='orange', alpha=0.6)
+            # Stack Indicated torque balance 
+            # combined_bottom = np.array(self.t_brake_stack) + np.array(self.t_fric_piston_stack) + np.array(self.t_fric_global_stack)
+            # plot4.bar(rpms_view, (self.t_inidcated_stack), bar_width, bottom=combined_bottom, label='indicated', color='blue')
+            
+
+            # 3. Finalize Plot 4 visuals
+            plot4.set_xlim(min(rpms), max(rpms))
+            indicated_peak = np.max(combined_bottom + np.array(self.t_pump_stack)) if len(self.t_pump_stack) > 0 else 200
+            plot4.set_ylim(0, max(indicated_peak * 1.3, 200))
+            plot4.legend(loc='upper left', fontsize='x-small', ncol=3)
+
+        # 4. Update the overlay text box
+        max_torque = np.max(active_torques)
+        max_t_rpm = rpms[np.argmax(active_torques)]
+        max_power = np.max(active_powers)
+        max_p_rpm = rpms[np.argmax(active_powers)]
+        dyno_str = (
+            f"Dyno report:\n"
+            f"Max Torque: {max_torque:5.0f} Nm  at: {max_t_rpm:.0f} rpm\n"
+            f"Max Power: {max_power:5.1f} kW  at: {max_p_rpm:.0f} rpm\n"
+        )
+        
+        if not hasattr(self, 'dyno_text'):
+            self.dyno_text = plot3.text(0.5, 0.85, dyno_str, transform=plot1.transAxes,
+                                       fontsize=9, family='monospace', ha='center', va='top',
+                                       bbox=dict(boxstyle="round", alpha=0.6, facecolor='white'))
+        else:
+            self.dyno_text.set_text(dyno_str)
+        
+        dashboard_manager.update_strategy_overlay([])
+        dashboard_manager.draw()
+    
+    def _setup_plots(self, plot1, plot2, plot3, plot4):
+        # --- PLOT 1: DYNO CURVE ---
+        plot1.clear()
+        plot1.set_title("Steady-State Dyno Curve")
+        plot1.set_ylabel("Torque (Nm)", color='g')
+        plot1.set_ylim(0, 260)
+        plot1.grid(True, alpha=0.3)
+        self.line_torque, = plot1.plot([], [], color='green', linewidth=2, label='Torque')
+        
+        ax1_twin = plot1.twinx()
+        ax1_twin.set_ylabel("Power (kW)", color='magenta')
+        ax1_twin.set_ylim(0, 100)
+        self.line_power, = ax1_twin.plot([], [], color='magenta', linewidth=2, ls='--', label='Power')
+
+        # --- PLOT 2: MEP LOSSES ---
+        plot2.clear()
+        plot2.set_title("Pumping & Friction (Bar)")
+        self.line_pmep, = plot2.plot([], [], label='PMEP', color='orange', lw=2)
+        self.line_fmep, = plot2.plot([], [], label='FMEP', color='red', lw=1, ls='--')
+        plot2.legend(loc='upper left', fontsize='small')
+
+        # --- PLOT 3: VOLUMETRIC EFFICIENCY ---
+        plot3.clear()
+        plot3.set_title("Volumetric Efficiency (%)")
+        plot3.set_ylim(60, 110)
+        self.line_ve, = plot3.plot([], [], label='VE %', color='blue', lw=2)
+
+        # --- PLOT 4: TORQUE BREAKDOWN ---
+        plot4.clear()
+        plot4.set_title("Torque Breakdown (Nm)")
+        # Note: Bars are created dynamically in update_dashboard
+        
+    def dump_telemetry(self, current_cycle=None, data=None):
+        sensors, telem, ecu_outputs = data
+        sensors: EngineSensors
+        telem: EngineTelemetry
+        ecu_outputs: EcuOutput
+        
+        # 1. Prepare Summary Scalars (Calculate these once per cycle)
+        v_disp_total = c.V_DISPLACED * c.NUM_CYL
+        # Convert Joules/m^3 to Bar (1e5 Pa = 1 Bar)
+        pmep_bar = (telem.state.work_pumping_j / v_disp_total) / 1e5
+        fmep_bar = (telem.state.work_friction_j / v_disp_total) / 1e5
+        imep_bar = (telem.state.work_net_indicated_j / v_disp_total) / 1e5
+        bmep_bar = imep_bar - fmep_bar
+        mech_eff = (bmep_bar / imep_bar * 100) if imep_bar > 0 else 0
+
+        # 2. Header (Focus on gas exchange dynamics)
+        header = (f"{'CAD':>4} | {'P_cyl[kP]':>9} | {'P_man[kP]':>9} | {'dm_in[mg]':>10} | "
+                f"{'m_cyl[mg]':>10} | {'Cd':>6} | {'T_cyl[K]':>8}")
+        print(header)
+        print("-" * len(header))  
+
+        for cad in range(720):
+            # Scan window: Focus on Overlap (0-30) and Intake/IVC (180-240)
+            cad_in_range = (0 <= cad <= 45) or (140 <= cad <= 240) or (680 <= cad <= 720)
+            if cad_in_range:
+                p_cyl = telem.cyl.log_P[cad] / 1000.0
+                p_man = telem.state.map_history[cad] / 1000.0
+                dm_in = telem.cyl.dm_in_history[cad] * 1e6
+                m_cyl = telem.cyl.total_mass_history[cad] * 1e6
+                Cd = telem.cyl.Cd_in_history[cad]
+                T_cyl = telem.cyl.log_T[cad]
+                
+                # Print logic: sample every 5 deg unless mass is actively moving
+                if abs(dm_in) > 0.01 or cad % 5 == 0:
+                    print(f"{cad:4d} | {p_cyl:9.2f} | {p_man:9.2f} | "
+                            f"{dm_in:10.3f} | {m_cyl:10.3f} | "
+                            f"{Cd:6.2f} | {T_cyl:8.1f}")
+
+        # 3. Final Performance Summary
+        ideal_air_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
+        m_trapped = telem.cyl.air_mass_at_IVC - telem.cyl.air_mass_at_TDC
+        ve = (m_trapped / ideal_air_mass) * 100
+        
+        print("-" * len(header))
+        print(f"--- CYCLE {current_cycle} SUMMARY ---")
+        print(f"VE: {ve:6.2f}% | Pumping: {pmep_bar:5.2f} bar | Friction: {fmep_bar:5.2f} bar")
+        print(f"IMEP: {imep_bar:5.2f} bar | BMEP: {bmep_bar:5.2f} bar | Mech Eff: {mech_eff:5.1f}%")
+        print(f"Mass Trapped: {m_trapped*1e6:6.2f}mg | Target (100% VE): {ideal_air_mass*1e6:6.2f}mg")
+
+                        
+
+    
 class DynoStrategy(BaseStrategy):
     """
     A variable load Dyno with a full rpm sweep
@@ -844,10 +1366,10 @@ class DynoStrategy(BaseStrategy):
     DYNO_RPM_TOLERANCE = 5.0
     SETTLE_CYCLES_REQUIRED = 1 * 720  # it is measured in degrees
            
-    def __init__(self, rl_dyno_mode=False):
+    def __init__(self, rpm=None, rl_dyno_mode=False):
         super().__init__()
         
-        self.start_rpm = 900 
+        self.start_rpm = rpm if rpm is not None else 900
         
         # rl support
         self.rl_dyno_mode = rl_dyno_mode
@@ -961,6 +1483,7 @@ class DynoStrategy(BaseStrategy):
     
     def driver_update(self, driver):
         tps = 100.0 # always WOT in dyno mode.
+        impulse_rpm = 0
         
         # inject RL target RPM
         if self.rl_dyno_mode:
@@ -983,7 +1506,7 @@ class DynoStrategy(BaseStrategy):
         self._set_dyno_target(driver)
         load = self._pid_control(driver) if self.in_dyno_sweep else 0.0
         
-        return tps, load, c.P_ATM_PA
+        return tps, load, c.P_ATM_PA, impulse_rpm
 
     def _set_dyno_target(self, driver):
         
@@ -1204,14 +1727,14 @@ class DynoStrategy(BaseStrategy):
         plot1.set_title("Steady-State Dyno Curve")
         plot1.set_xlabel("RPM")
         plot1.set_ylabel("Torque (Nm)", color='g')
-        plot1.set_ylim(0, 360)
+        plot1.set_ylim(100, 260)
         plot1.tick_params(axis='y', labelcolor='g')
         self.line_torque, = plot1.plot([], [], color='green', linewidth=2, markersize=8, label='Torque (Nm)', ls='-')
 
         # Create twin axis ONCE and store it
         plot1_ax2 = plot1.twinx()
         plot1_ax2.set_ylabel("Power (kW)", color='magenta')
-        plot1_ax2.set_ylim(0, 105)
+        plot1_ax2.set_ylim(10, 90)
         plot1_ax2.tick_params(axis='y', labelcolor='magenta')
         self.line_power, = plot1_ax2.plot([], [], color='magenta', linewidth=2, markersize=8, label='Power (kW)', ls='dashed')
 
@@ -1224,4 +1747,6 @@ class DynoStrategy(BaseStrategy):
         plot2.set_ylabel("Rejection %")
         plot2.set_ylim(0, 5)
         self.line_backflow, = plot2.plot([], [], color='orange', label='Backflow %')
+        
+
                 

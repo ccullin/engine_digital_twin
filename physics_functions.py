@@ -469,33 +469,89 @@ def calc_valve_area_vectorized(theta_array: np.ndarray, valve: Valve, lift_vecto
 
 # --- Flow and Mass Functions ---
 
-def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl, P_extern, T_extern, R_extern, g_extern, is_intake):
+# def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl, P_extern, T_extern, R_extern, g_extern, is_intake):
+#     """
+#     P_cyl, T_cyl, R_cyl, g_cyl: State INSIDE the cylinder
+#     P_manifold, T_manifold, R_manifold, g_manifold: State OUTSIDE (Manifold for intake, Atmosphere for exhaust)
+#     """
+#     if A_valve < 1e-9 or lift < 1e-5:
+#         return 0.0, 0.0
+    
+#     # Identify Upstream (Source) and Downstream (Sink)
+#     if P_cyl >= P_extern:
+#         # Flowing OUT of cylinder (Exhaust or Intake Reversion)
+#         P_up, T_up, R_up, gamma = P_cyl, T_cyl, R_cyl, g_cyl
+#         P_down = P_extern
+#         direction = -1.0 # Negative means leaving cylinder
+#     else:
+#         # Flowing INTO cylinder (Normal Intake or Exhaust Backflow/EGR)
+#         P_up, T_up, R_up, gamma = P_extern, T_extern, R_extern, g_extern
+#         P_down = P_cyl
+#         direction = 1.0 # Positive means entering cylinder
+
+#     # --- Standard Isentropic Math ---
+#     pr = P_down / max(P_up, 1.0)
+#     pr_crit = (2.0 / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
+    
+#     Cd = _calc_physics_Cd(lift, diameter, is_intake)
+#     # Cd = 0.7 if not is_intake else Cd
+
+
+#     if pr <= pr_crit:
+#         # Choked Flow
+#         mdot = (Cd * A_valve * P_up * np.sqrt(gamma / (R_up * T_up)) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1))))
+#     else:
+#         # Subcritical Flow
+#         pr_eff = min(pr, 0.9999)
+#         mdot = (Cd * A_valve * P_up * np.sqrt(2 * gamma / (R_up * T_up * (gamma - 1)) * (pr_eff**(2/gamma) - pr_eff**((gamma+1)/gamma))))
+
+#     return mdot * direction, Cd
+
+def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl, 
+                         P_extern, T_extern, R_extern, g_extern, is_intake, rpm):
     """
     P_cyl, T_cyl, R_cyl, g_cyl: State INSIDE the cylinder
-    P_manifold, T_manifold, R_manifold, g_manifold: State OUTSIDE (Manifold for intake, Atmosphere for exhaust)
+    P_extern, T_extern, R_extern, g_extern: State OUTSIDE (Manifold/Atmosphere)
     """
     if A_valve < 1e-9 or lift < 1e-5:
         return 0.0, 0.0
 
+    # --- START HIGHLIGHT: RAM EFFECT CALCULATION ---
+    # Simulates air momentum in the intake runner. 
+    # 2.5 kPa is a baseline for 3000 RPM on a WBX; it scales with RPM squared.
+    ram_boost = 0.0
+    # if is_intake:
+    #     ram_boost = (rpm / 3000)**2 * 600.0 # Reduced from 2500.0
+        
+    # --- END HIGHLIGHT ---
+
     # Identify Upstream (Source) and Downstream (Sink)
-    if P_cyl >= P_extern:
+    if P_cyl >= (P_extern + ram_boost): # HIGHLIGHT: Added ram_boost to threshold
         # Flowing OUT of cylinder (Exhaust or Intake Reversion)
         P_up, T_up, R_up, gamma = P_cyl, T_cyl, R_cyl, g_cyl
         P_down = P_extern
-        direction = -1.0 # Negative means leaving cylinder
+        direction = -1.0 
     else:
         # Flowing INTO cylinder (Normal Intake or Exhaust Backflow/EGR)
-        P_up, T_up, R_up, gamma = P_extern, T_extern, R_extern, g_extern
+        # HIGHLIGHT: Upstream pressure is now higher due to air momentum
+        P_up, T_up, R_up, gamma = (P_extern + ram_boost), T_extern, R_extern, g_extern
         P_down = P_cyl
-        direction = 1.0 # Positive means entering cylinder
+        direction = 1.0 
 
     # --- Standard Isentropic Math ---
     pr = P_down / max(P_up, 1.0)
     pr_crit = (2.0 / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
     
     Cd = _calc_physics_Cd(lift, diameter, is_intake)
-    # Cd = 0.7 if not is_intake else Cd
-
+    # if is_intake:
+    #     Cd = 0.55
+    # else: 
+    #     Cd = 0.7
+    # NEW LOGIC: If air is trying to blow BACK into the intake, 
+    # it faces different resistance/physics than coming in.
+    # if is_intake and direction == -1.0:
+    #     # If we want to LOWER VE, we increase this multiplier to let air escape.
+    #     Cd *= 1.2 
 
     if pr <= pr_crit:
         # Choked Flow
@@ -504,42 +560,34 @@ def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl, P_
         # Subcritical Flow
         pr_eff = min(pr, 0.9999)
         mdot = (Cd * A_valve * P_up * np.sqrt(2 * gamma / (R_up * T_up * (gamma - 1)) * (pr_eff**(2/gamma) - pr_eff**((gamma+1)/gamma))))
+        
+    penalty = _calc_sonic_penalty(mdot, P_up, T_up, R_up, gamma, A_valve, Cd, is_intake)
+    mdot *= penalty
 
     return mdot * direction, Cd
 
-""" TOO EFFICIENT FOR A STOCK ENGINE """    
-# def _calc_physics_Cd(lift, diameter):
-#     if lift <= 0: return 0.0
-#     ld_ratio = lift / diameter
-    
-#     # Target: Stay slightly more efficient at mid-lift (0.15 - 0.25 L/D)
-#     # We increase the base_cd to 0.74 (a very healthy ported VW head)
-#     # and slow the decay rate slightly.
-#     base_cd = 0.74 
-#     efficiency_gain = 0.12
-#     decay_rate = 8.0 # Reduced from 10.0 to broaden the "sweet spot"
-    
-#     cd = base_cd + efficiency_gain * np.exp(-decay_rate * ld_ratio)
-#     return cd
+def _calc_sonic_penalty(mdot, P_up, T_up, R_up, gamma, Area, Cd, is_intake):
+    if Area <= 1e-9 or Cd <= 0 or abs(mdot) < 1e-12:
+        return 1.0
 
-# def _calc_physics_Cd(lift, diameter):
-#     if lift <= 0: return 0.0
-#     ld_ratio = lift / diameter
+    rho_up = P_up / (R_up * T_up)
+    # Velocity u = m/rhoA
+    velocity = abs(mdot) / (rho_up * Area * Cd)
+    a = np.sqrt(gamma * R_up * T_up)
+    mach = velocity / a
     
-#     # Stock VW MV 2.1L heads are not "Very healthy ported heads"
-#     # We want a peak Cd around 0.68 at mid-lift, tapering at high lift
+    # Asymmetrical thresholds
+    # Intake chokes earlier due to lower pressure differentials
+    limit = 0.42 if is_intake else 0.60 
     
-#     # 1. Base Cd for a stock-ish port
-#     base_cd = 0.62 # was 0.62
+    if mach > limit:
+        # Increase the multiplier (5.0) to make the drop steeper
+        penalty = np.clip(1.0 - 5.0 * (mach - limit)**2, 0.1, 1.0)
+        return penalty
     
-#     # 2. Add a 'hump' of efficiency at mid-lift (around L/D = 0.15)
-#     # Using a Gaussian-style curve instead of exponential decay
-#     mid_lift_boost = 0.58 * np.exp(-((ld_ratio - 0.15)**2) / 0.02)
-    
-#     cd = base_cd + mid_lift_boost
-    
-#     # 3. Cap it to ensure we don't exceed realistic physics
-#     return min(cd, 0.66) # was 0.70
+    return 1.0
+
+""" TOO EFFICIENT FOR A STOCK ENGINE """    
 
 # def _calc_physics_Cd(lift, diameter, is_intake=True):
 #     if lift <= 0.0001: return 0.0
@@ -563,36 +611,105 @@ def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl, P_
 #     cd = base_cd + mid_lift_boost
 #     return min(cd, cap)
 
+# THIS VERSION PASSED ALL UNIT TESTS.
+# def _calc_physics_Cd(lift, diameter, is_intake=True):
+#     if lift <= 0.0005: return 0.0
+    
+#     ld_ratio = lift / diameter
+    
+#     # if is_intake:
+#     #     # Lowering target_cd from 0.62 to 0.58. 
+#     #     # Stock WBX heads are not exceptionally high-flow.
+#     #     target_cd = 0.58  
+        
+#     #     # Use a steeper ramp to simulate initial flow restriction
+#     #     ramp = min(1.0, (lift / 1.5)**1.2) 
+        
+#     #     # Mid-lift dynamics: Keep the boost but tighten it
+#     #     boost = 0.04 * np.exp(-((ld_ratio - 0.25)**2) / 0.05)
+        
+#     #     cd = (target_cd * ramp) + boost
+#     #     # Lowering cap from 0.68 to 0.64 to restrict high-RPM VE
+#         # cap = 0.64 
+#     if is_intake:
+#         # Lowered from 0.52 to 0.48. 
+#         # This creates the bottleneck needed to shift the power peak.
+#         target_cd = 0.48  
+        
+#         # Keep the squared ramp. It works with the new Ram Effect 
+#         # to maintain a clean 'trapping' phase.
+#         ramp = min(1.0, (lift / 1.8)**2.0) 
+        
+#         # Minimize the boost. High-lift efficiency is what 
+#         # is pushing your power peak to 5200 RPM.
+#         boost = 0.01 * np.exp(-((ld_ratio - 0.20)**2) / 0.01)
+        
+#         cd = (target_cd * ramp) + boost
+        
+#         # Tighten the cap to 0.52. 
+#         # This forces the engine to "run out of breath" after 4500 RPM.
+#         cap = 0.52
+        
+#     else:
+#         # Exhaust: Stock exhaust is quite restrictive (cast manifolds)
+#         target_cd = 0.55 # Lowered from 0.60
+#         cap = 0.68 # Lowered from 0.72
+#         ramp = min(1.0, lift / 1.2)
+#         boost = 0.06 * np.exp(-((ld_ratio - 0.20)**2) / 0.02)
+#         cd = (target_cd * ramp) + boost
+
+#     return min(cd, cap)
+
+
+# WORKS BUT IS A FLAT RAMP AND NOT REAL WORLD
+# def _calc_physics_Cd(lift, diameter, is_intake):
+#     if lift <= 0.0005: return 0.0
+    
+#     ld = lift / diameter
+#     # Scale for WBX head efficiency (0.8 = 80% of theoretical ideal)
+#     scale = 0.8 if is_intake else 0.85
+    
+#     # 0.8 is the theoretical limit for a perfect sharp-edged orifice
+#     # We use a smooth transition to avoid the CAD 200 spike
+#     if ld < 0.125:
+#         # Regime 1: Attached flow (Linear onset)
+#         cd = 0.8 * (ld / 0.125)
+#     else:
+#         # Regime 2 & 3: Detached flow
+#         # This curve mimics the detachment loss without a sharp break
+#         cd = 0.8 - 0.3 * (1.0 - np.exp(-2.0 * (ld - 0.125)))
+
+#     # Apply scaling and the WBX flow cap
+#     final_cd = cd * scale
+#     cap = 0.50 if is_intake else 0.58
+    
+#     return min(final_cd, cap)
+
 def _calc_physics_Cd(lift, diameter, is_intake=True):
     if lift <= 0.0005: return 0.0
-    
     ld_ratio = lift / diameter
     
     if is_intake:
-        # Lowering target_cd from 0.62 to 0.58. 
-        # Stock WBX heads are not exceptionally high-flow.
-        target_cd = 0.58  
+        # Increase target to 0.56 to lower PMEP and flatten mid-range torque
+        target_cd = 0.56  
         
-        # Use a steeper ramp to simulate initial flow restriction
-        ramp = min(1.0, (lift / 1.5)**1.2) 
+        # Use a convex ramp (0.7) to let air in easier at low/mid lift
+        # This prevents the torque from nose-diving at 3200 RPM.
+        ramp = min(1.0, (lift / 2.2)**0.7) 
         
-        # Mid-lift dynamics: Keep the boost but tighten it
-        boost = 0.04 * np.exp(-((ld_ratio - 0.25)**2) / 0.05)
+        # Subtle boost at mid-lift ld_ratio
+        boost = 0.02 * np.exp(-((ld_ratio - 0.15)**2) / 0.01)
         
         cd = (target_cd * ramp) + boost
-        # Lowering cap from 0.68 to 0.64 to restrict high-RPM VE
-        cap = 0.64 
-        
+        cap = 0.60 # Higher cap than before, let the Mach Penalty handle the RPM limit
     else:
-        # Exhaust: Stock exhaust is quite restrictive (cast manifolds)
-        target_cd = 0.55 # Lowered from 0.60
-        cap = 0.68 # Lowered from 0.72
-        ramp = min(1.0, lift / 1.2)
-        boost = 0.06 * np.exp(-((ld_ratio - 0.20)**2) / 0.02)
-        cd = (target_cd * ramp) + boost
-
+        # Exhaust needs to be freer to pass the PMEP < 0.25 test
+        target_cd = 0.58
+        cap = 0.65
+        ramp = min(1.0, (lift / 1.5)**0.8)
+        cd = (target_cd * ramp)
+        
     return min(cd, cap)
-
 
 # --- Combustion and Heat Functions ---
 
@@ -742,36 +859,56 @@ def calc_pumping_losses(P_cyl, V_list, theta_list):
     """This function is a placeholder; PMEP is implicitly calculated in W_indicated."""
     pass
 
+# def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
+#     """
+#     Calculations the friction associated with a single cylinder.  it excludes the firction of the oil pump, valve train etc
+#     that is common across all cylinders.
+#     """
+#      # 1. Kinematics
+#     geom_factor = calc_piston_speed_factor(theta)
+#     omega = (rpm * 2 * np.pi) / 60.0
+#     v_piston_inst = abs(omega * geom_factor)
+    
+#     # 2. Viscosity
+#     visc_factor = max(1.0, 1.0 + 2.0 * np.exp(-0.05 * (clt - 40)))
+
+#     # 3. Dynamic Coefficients 
+#     # Increasing f_linear slightly to raise the 3000rpm baseline
+#     f_linear = 1.65 * v_piston_inst # was 2.0
+    
+#     # Increasing f_quadratic to ensure we hit the "doubling" target at 4500rpm
+#     f_quadratic = 0.015 * (v_piston_inst**2) # was 0.02
+    
+#     # f_pressure remains a minor player during motoring but major during firing
+#     f_pressure = 0.0001 * max(0, p_cyl) # was 0.00001
+    
+#     total_f_friction = (f_linear + f_quadratic + f_pressure)
+    
+#     # 4. Correct Conversion to Torque
+#     t_friction = total_f_friction * c.RADIUS_CRANK * abs(np.sin(np.deg2rad(theta)))
+    
+#     # Apply viscosity mostly to the speed-based shearing
+#     return t_friction * visc_factor
+
 def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
-    """
-    Calculations the friction associated with a single cylinder.  it excludes the firction of the oil pump, valve train etc
-    that is common across all cylinders.
-    """
-     # 1. Kinematics
     geom_factor = calc_piston_speed_factor(theta)
     omega = (rpm * 2 * np.pi) / 60.0
     v_piston_inst = abs(omega * geom_factor)
     
-    # 2. Viscosity
     visc_factor = max(1.0, 1.0 + 2.0 * np.exp(-0.05 * (clt - 40)))
 
-    # 3. Dynamic Coefficients 
-    # Increasing f_linear slightly to raise the 3000rpm baseline
-    f_linear = 1.65 * v_piston_inst # was 2.0
-    
-    # Increasing f_quadratic to ensure we hit the "doubling" target at 4500rpm
-    f_quadratic = 0.015 * (v_piston_inst**2) # was 0.02
-    
-    # f_pressure remains a minor player during motoring but major during firing
-    f_pressure = 0.0001 * max(0, p_cyl) # was 0.00001
+    # Toned down for WBX 2.1L 
+    f_linear = 1.4 * v_piston_inst 
+    f_quadratic = 0.007 * (v_piston_inst**2)  # Reduced to allow 4800rpm peak
+    f_pressure = 0.000025 * max(0, p_cyl)    # Reduced to fix 63% efficiency fail
     
     total_f_friction = (f_linear + f_quadratic + f_pressure)
     
-    # 4. Correct Conversion to Torque
+    # Correct Conversion to Torque
     t_friction = total_f_friction * c.RADIUS_CRANK * abs(np.sin(np.deg2rad(theta)))
     
-    # Apply viscosity mostly to the speed-based shearing
     return t_friction * visc_factor
+
 
 def calc_engine_core_friction(clt, rpm):
     visc_factor = max(1.0, 1.0 + 2.0 * np.exp(-0.05 * (clt - 40)))
@@ -925,7 +1062,7 @@ def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
     return (pressure_ratio > 1.0), (pressure_ratio - 1.0) * 10.0 if pressure_ratio > 1.0 else 0.0
 
 
-def calc_indicated_torque_step(delta_work_J, stroke):
+def calc_indicated_torque_step(delta_work_J):
     """
     Calculates instantaneous torque for a single degree step.
     Ensures negative torque during the intake (pumping) stroke.

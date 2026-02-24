@@ -149,7 +149,7 @@ T_FUEL_K = T_AMBIENT
 
 # =================================== RPM LIMITS ======================================
 IDLE_RPM = 900.0
-RPM_LIMIT = 5600
+RPM_LIMIT = 6000
 
 
 # M_GAS_INITIAL   = 1.2e-4        # kg (reasonable trapped mass at cold crank)

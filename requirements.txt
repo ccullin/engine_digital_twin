@@ -1,0 +1,15 @@
+# Core Frameworks
+stable_baselines3==2.7.0
+gymnasium==1.2.2
+torch==2.9.1
+
+# Data & Math
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.16.2
+matplotlib==3.10.7
+
+# Development & Tools (Only if you use them)
+pytest==9.0.2
+tensorboard==2.20.0
+opencv-python==4.12.0.88
