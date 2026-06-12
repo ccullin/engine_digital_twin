@@ -242,7 +242,7 @@ class IdleStrategy(BaseStrategy):
             f"Friction Loss:  {engine_data.state.work_friction_j:8.1f} J",
             f"Pumping Loss:   {engine_data.state.work_pumping_j:8.1f} J",
             "----------------------------",
-            f"NET BALANCE:    {engine_data.state.work_engine_720 + engine_data.state.work_friction_j:+8.1f} J",
+            f"NET BALANCE:    {engine_data.state.work_net_indicated_j:+8.1f} J",
         ]
         
         # Diagnosis Logic
@@ -250,7 +250,7 @@ class IdleStrategy(BaseStrategy):
             lines.append("DIAG:  EXTREME LEAN / STALL")
         elif sensors.rpm < target_rpm - 100 and valve_pct > 95:
             lines.append("DIAG:  INSUFFICIENT AIR (MAXED)")
-        elif abs(afr_error) < 0.5 and (engine_data.state.work_engine_720 + engine_data.state.work_friction_j) < 0:
+        elif abs(afr_error) < 0.5 and engine_data.state.work_net_indicated_j < 0:
             lines.append("DIAG:  HIGH MECHANICAL DRAG")
         else:
             lines.append("DIAG:  IDLE STABLE")
@@ -874,6 +874,7 @@ class ImpulseDynoStrategy(BaseStrategy):
     
     DYNO_START_RPM = 1000
     DYNO_FINISH_RPM = c.RPM_LIMIT
+    STABLISATION_CYCLES = 2
     
     def __init__(self, rpm=None, rl_dyno_mode=False):
         super().__init__()
@@ -881,7 +882,7 @@ class ImpulseDynoStrategy(BaseStrategy):
         self.start_rpm = rpm if rpm is not None else 900
         
         # impulse dyno values
-        self.rpm_range = np.arange(DynoStrategy.DYNO_START_RPM, DynoStrategy.DYNO_FINISH_RPM + 1, 100)
+        self.rpm_range = np.arange(ImpulseDynoStrategy.DYNO_START_RPM, ImpulseDynoStrategy.DYNO_FINISH_RPM + 1, 100)
         rpm_steps = len(self.rpm_range)
         self.rpm_index = 0
         self.governor_torque_data = np.zeros(rpm_steps)
@@ -900,6 +901,8 @@ class ImpulseDynoStrategy(BaseStrategy):
         #plot 2 - 4
         self.pmep_data = []
         self.fmep_data = []
+        self.tfric_global_data = []
+        self.tfric_piston_data = []
         self.ve_data = []
         self.Cd_i_data = []
         self.Cd_e_data = []
@@ -937,203 +940,15 @@ class ImpulseDynoStrategy(BaseStrategy):
         return rpm
     
     def record_torque(self, driver):
-        if driver.cycle %3 == 0 and driver.cycle > 0 and driver.theta == 719:
-            self.governor_torque_data[self.rpm_index] = abs(driver.governor_torque) # index was updated for next rpm
+        if (driver.cycle % ImpulseDynoStrategy.STABLISATION_CYCLES) == 0 and driver.cycle > 0 and driver.theta == 719:
+            self.governor_torque_data[self.rpm_index] = abs(driver.governor_torque) 
             self.power_data[self.rpm_index] = abs(driver.governor_torque) * self.rpm_range[self.rpm_index] / 9548.8
+            
             if self.rpm_index < len(self.rpm_range) - 1:
                 self.rpm_index += 1
             else:
                 self.dyno_complete = True
 
-
-        
-    # def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
-    #     """Standardized update called every cycle by the main loop"""
-    #     axes = dashboard_manager.get_strategy_axes()
-    #     if axes is None or data is None:
-    #         return
-        
-    #     ax_topleft, ax_topright, ax_bottomleft, ax_bottomright = axes
-    #     plot1 = ax_topleft
-    #     plot2 = ax_topright
-    #     plot3 = ax_bottomleft
-    #     plot4 = ax_bottomright
-        
-    #     sensors, engine_data, ecu_outputs = data
-    #     sensors: EngineSensors
-    #     engine_data: EngineTelemetry
-    #     ecu_outputs: EcuOutput
-
-    #     # === INITIALIZE ARTISTS (Standard Pattern) ===
-    #     if not hasattr(self, 'artists_created'):
-    #         self._setup_plots(plot1, plot2, plot3, plot4)
-    #         self.artists_created = True
-
-    #     rpms = self.rpm_range
-        
-    #     # 1. Update Plot 1 (Power Curve)
-    #     active_torques = self.governor_torque_data
-    #     active_powers = self.power_data
-    
-    #     self.line_torque.set_data(rpms, active_torques)
-    #     self.line_power.set_data(rpms, active_powers)
-    #     plot1.set_xlim(min(rpms)-200, max(rpms)+500)
-
-  
-    #     if current_cycle %3 == 0 and current_cycle > 0 and not self.dyno_complete:
-    #         # 2. Update Plot 2 (Losses)
-    #         # Assuming you've collected these in lists during the sweep
-    #         current_PMEP = -(engine_data.state.work_pumping_j / (c.V_DISPLACED * c.NUM_CYL * 1e5))
-    #         current_FMEP = engine_data.state.work_friction_j / (c.V_DISPLACED * c.NUM_CYL * 1e5)
-    #         self.pmep_data.append(current_PMEP)
-    #         self.fmep_data.append(abs(current_FMEP))
-        
-    #         current_len = len(self.pmep_data)
-    #         # Slice the rpms to match the data we actually have
-    #         rpms_view = rpms[:current_len]
-            
-    #         self.line_pmep.set_data(rpms_view, self.pmep_data)
-    #         self.line_fmep.set_data(rpms_view, self.fmep_data)
-    #         plot2.set_ylim(0, max(max(self.fmep_data, default=1), 2))
-    #         plot2.set_xlim(min(rpms), max(rpms))
-
-    #         # Update Plot 3 (Breathing)
-    #         ideal_air_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
-    #         current_ve = (engine_data.cyl.air_mass_at_IVC - engine_data.cyl.air_mass_at_TDC) / ideal_air_mass
-    #         self.ve_data.append(current_ve * 100)
-        
-    #         plot3.set_xlim(min(rpms), max(rpms))
-    #         self.line_ve.set_data(rpms_view, self.ve_data)
-
-    #         # PLOT 4B (Friction)
-    #         self.fric_cyl_data.append(np.mean(engine_data.state.torque_friction_piston_history))
-    #         self.fric_global_data.append(np.mean(engine_data.state.torque_friction_global_history))
-    #         self.line_fric_cyl.set_data(rpms_view, self.fric_cyl_data)
-    #         self.line_fric_global.set_data(rpms_view, self.fric_global_data)
-            
-    #         # 1. Find the peak in each list (or 0 if empty)
-    #         peak_cyl = max(self.fric_cyl_data, default=0)
-    #         peak_global = max(self.fric_global_data, default=0)
-
-    #         # 2. Find the highest of the two, scale it, and ensure a minimum of 2.0
-    #         y_limit = max(max(peak_cyl, peak_global) * 1.1, 2.0)
-
-    #         plot4.set_ylim(0, y_limit)
-    #         plot4.set_xlim(min(rpms), max(rpms))
-
-        
-        
-    #     # PLOT 4A (Isentropic Cd values)
-    #     # self.line_Cd_i.set_data(np.arange(720), engine_data.cyl.Cd_in_history)
-    #     # self.line_Cd_e.set_data(np.arange(720), engine_data.cyl.Cd_ex_history)
-
-        
-        
-    #     # 4. Update the overlay text box
-    #     max_torque = np.max(active_torques)
-    #     max_t_idx = np.argmax(active_torques)
-    #     max_t_rpm = rpms[max_t_idx]
-    #     max_power = np.max(active_powers)
-    #     max_p_idx = np.argmax(active_powers)
-    #     max_p_rpm = rpms[max_p_idx]
-    #     dyno_str = (
-    #         f"Dyno report:\n"
-    #         f"Max Torque: {max_torque:5.0f} Nm  at: {max_t_rpm:.0f} rpm\n"
-    #         f"Max Power: {max_power:5.1f} kW  at: {max_p_rpm:.0f} rpm\n"
-    #     )
-        
-    #     if not hasattr(self, 'dyno_text'):
-    #         self.dyno_text = plot3.text(0.5, 0.85, dyno_str, 
-    #                                             transform=plot1.transAxes,
-    #                                             fontsize=9, family='monospace',
-    #                                             ha='center', va='top',
-    #                                             bbox=dict(boxstyle="round", alpha=0.6, facecolor='white'))
-    #     else:
-    #         self.dyno_text.set_text(dyno_str)
-        
-        
-    #     # === UPDATE TEXT OVERLAY ===
-    #     lines = []
-    #     dashboard_manager.update_strategy_overlay(lines)
-    #     dashboard_manager.draw()
-    
-    # def _setup_plots(self, plot1, plot2, plot3, plot4):
-        
-    #     # --- PLOT1 DYNO TORQUE and POWER CHART
-    #     plot1.clear()
-    #     plot1.set_title("Steady-State Dyno Curve")
-    #     plot1.set_xlabel("RPM")
-    #     plot1.set_ylabel("Torque (Nm)", color='g')
-    #     plot1.set_ylim(100, 260)
-    #     plot1.tick_params(axis='y', labelcolor='g')
-    #     plot1.grid(True, alpha=0.3)
-
-    #     self.line_torque, = plot1.plot([], [], color='green', linewidth=2, markersize=8, label='Torque (Nm)', ls='-')
-        
-    #     plot1.legend(loc='upper left')
-
-    #     # Create twin axis ONCE and store it
-    #     plot1_ax2 = plot1.twinx()
-    #     plot1_ax2.set_ylabel("Power (kW)", color='magenta')
-    #     plot1_ax2.set_ylim(10, 90)
-    #     plot1_ax2.tick_params(axis='y', labelcolor='magenta')
-
-    #     self.line_power, = plot1_ax2.plot([], [], color='magenta', linewidth=2, markersize=8, label='Power (kW)', ls='dashed')
-        
-    #     plot1_ax2.legend(loc='upper right')
-
-        
-    #     # PLOT 2: Internal Losses (PMEP and FMEP)
-    #     plot2.clear()
-    #     plot2.set_title("Pumping & Friction Losses")
-    #     plot2.set_xlabel("RPM")
-    #     plot2.set_ylabel("Pressure (Bar)")
-    #     plot2.grid(True, alpha=0.3)
-
-    #     self.line_pmep, = plot2.plot([], [], label='PMEP (Pumping)', color='orange', lw=2)
-    #     self.line_fmep, = plot2.plot([], [], label='FMEP (Friction)', color='red', lw=1, ls='--')
-        
-    #     plot2.legend(loc='upper left', fontsize='small')
-
-    #     # PLOT 3: Breathing Dynamics (VE)
-    #     plot3.clear()
-    #     plot3.set_title("Breathing Dynamics")
-    #     plot3.set_xlabel("RPM")
-    #     plot3.set_ylabel("VE (%)")
-    #     plot3.set_ylim(60, 110) # Typical VE range
-    #     self.line_ve, = plot3.plot([], [], label='VE %', color='blue', lw=2)
-        
-    #     # Twin axis for Mach Number and Cd values
-    #     # self.ax_mach = plot3.twinx()
-    #     # self.ax_mach.set_ylabel("Mach Number and Cd value", color='purple')        
-    #     # self.ax_mach.set_ylim(0, 1.0) # Mach 1.0 is the physical limit
-    #     # self.ax_mach.axhline(0.45, color='purple', alpha=0.2, ls='--') # The "Cliff" threshold
-    #     # self.line_mach, = self.ax_mach.plot([], [], label='Intake Mach', color='purple', lw=1, ls=':')
-        
-    #     # # PLOT 4A: Cd values
-    #     # plot4.clear()
-    #     # plot4.set_title("Isentropic Cd factors")
-    #     # plot4.set_xlabel("CAD")
-    #     # plot4.set_ylabel("Cd")
-    #     # plot4.set_xlim(0, 720)
-    #     # plot4.set_ylim(0, 1.0) # Mach 1.0 is the physical limit
-
-    #     # self.line_Cd_i, = plot4.plot([], [], label='Intake Cd', color='blue')
-    #     # self.line_Cd_e, = plot4.plot([], [], label='Exhaust Cd', color='cyan')
-        
-    #     # plot4.legend(loc='upper right', fontsize='small')
-
-    #     # PLOT 4B: Friction
-    #     plot4.clear()
-    #     plot4.set_title("Friction")
-    #     plot4.set_xlabel("RPM")
-    #     plot4.set_ylabel("Friction(Nm)")
-
-    #     self.line_fric_cyl,    = plot4.plot([], [], label='Fric (Cylinder)', color='orange', lw=2)
-    #     self.line_fric_global, = plot4.plot([], [], label='Fric (Core)', color='red', lw=1, ls='--')
-        
-        
-    #     plot4.legend(loc='upper left', fontsize='small')
   
   
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
@@ -1165,24 +980,41 @@ class ImpulseDynoStrategy(BaseStrategy):
         # 1. Update Plot 1 (Power Curve)
         self.line_torque.set_data(rpms, active_torques)
         self.line_power.set_data(rpms, active_powers)
-        plot1.set_xlim(min(rpms)-200, max(rpms)+500)
+        plot1.set_xlim(1000, 5200)
 
         # 2. Process Stats (Every 3 cycles to maintain performance)
-        if current_cycle % 3 == 0 and current_cycle > 0 and not self.dyno_complete:
+        if (current_cycle % ImpulseDynoStrategy.STABLISATION_CYCLES) == 0 and current_cycle > 0 and not self.dyno_complete:
             # --- CALCULATE LOSSES ---
             # MEP values (Bar)
             current_PMEP = -(engine_data.state.work_pumping_j / (c.V_DISPLACED * c.NUM_CYL * 1e5))
-            current_FMEP = engine_data.state.work_friction_j / (c.V_DISPLACED * c.NUM_CYL * 1e5)
             self.pmep_data.append(current_PMEP)
-            self.fmep_data.append(abs(current_FMEP))
+            # current_FMEP = engine_data.state.work_friction_j / (c.V_DISPLACED * c.NUM_CYL * 1e5)
+            # self.fmep_data.append(abs(current_FMEP))
+            
+            # plotting Torque friction rather than MEP
+            t_fric_global_mean = np.mean(engine_data.state.torque_friction_global_history)
+            t_fric_piston_mean = np.mean(engine_data.state.torque_friction_piston_history)
+            self.tfric_global_data.append(abs(t_fric_global_mean))
+            self.tfric_piston_data.append(abs(t_fric_piston_mean))
         
             current_len = len(self.pmep_data)
             rpms_view = rpms[:current_len]
             
-            # --- UPDATE PLOT 2 (MEP Lines) ---
+            # # --- UPDATE PLOT 2 (MEP Lines) ---
+            # self.line_pmep.set_data(rpms_view, self.pmep_data)
+            # self.line_fmep.set_data(rpms_view, self.fmep_data)
+            # plot2.set_ylim(0, max(max(self.fmep_data, default=1), 2.5))
+            # plot2.set_xlim(min(rpms), max(rpms))
+            
+
             self.line_pmep.set_data(rpms_view, self.pmep_data)
-            self.line_fmep.set_data(rpms_view, self.fmep_data)
-            plot2.set_ylim(0, max(max(self.fmep_data, default=1), 2.5))
+            self.line_tfric_global.set_data(rpms_view, self.tfric_global_data)
+            self.line_tfric_piston.set_data(rpms_view, self.tfric_piston_data)
+
+            # Adjust Y-limits for Torque (Nm) - Usually 0 to ~30 Nm for total friction
+            # plot2_2.set_ylim(0, max(self.pmep_data) * 1.1)
+            max_val = max(self.tfric_piston_data) * 1.2
+            plot2.set_ylim(0, max_val)
             plot2.set_xlim(min(rpms), max(rpms))
 
             # --- UPDATE PLOT 3 (VE) ---
@@ -1191,6 +1023,8 @@ class ImpulseDynoStrategy(BaseStrategy):
             self.ve_data.append(current_ve * 100)
             self.line_ve.set_data(rpms_view, self.ve_data)
             plot3.set_xlim(min(rpms), max(rpms))
+            
+            # cd_i = engine_data.cyl.Cd_in_history
 
             # --- UPDATE PLOT 4 (STACKED TORQUE BREAKDOWN) ---
             # 1. Capture current torque components (Nm)
@@ -1268,20 +1102,28 @@ class ImpulseDynoStrategy(BaseStrategy):
         plot1.clear()
         plot1.set_title("Steady-State Dyno Curve")
         plot1.set_ylabel("Torque (Nm)", color='g')
-        plot1.set_ylim(0, 260)
+        plot1.set_ylim(100, 260)
         plot1.grid(True, alpha=0.3)
         self.line_torque, = plot1.plot([], [], color='green', linewidth=2, label='Torque')
         
         ax1_twin = plot1.twinx()
         ax1_twin.set_ylabel("Power (kW)", color='magenta')
-        ax1_twin.set_ylim(0, 100)
+        ax1_twin.set_ylim(10, 90)
         self.line_power, = ax1_twin.plot([], [], color='magenta', linewidth=2, ls='--', label='Power')
 
         # --- PLOT 2: MEP LOSSES ---
         plot2.clear()
-        plot2.set_title("Pumping & Friction (Bar)")
-        self.line_pmep, = plot2.plot([], [], label='PMEP', color='orange', lw=2)
+        plot2.set_title("Pumping (bar) and Friction (Nm)")
+        plot2.set_ylabel("Friction (Nm)", color='blue')
         self.line_fmep, = plot2.plot([], [], label='FMEP', color='red', lw=1, ls='--')
+        self.line_tfric_global, = plot2.plot([], [], label='T_fric_global', color='red', lw=1, ls='--')
+        self.line_tfric_piston, = plot2.plot([], [], label='T_fric_piston', color='blue', lw=1, ls='--')
+        
+        
+        plot2_2 = plot2.twinx()
+        plot2_2.set_ylabel("PMEP (bar)", color='orange')
+        plot2_2.set_ylim(0, 2.0)
+        self.line_pmep, = plot2_2.plot([], [], label='PMEP', color='orange', lw=2)
         plot2.legend(loc='upper left', fontsize='small')
 
         # --- PLOT 3: VOLUMETRIC EFFICIENCY ---
@@ -1289,6 +1131,14 @@ class ImpulseDynoStrategy(BaseStrategy):
         plot3.set_title("Volumetric Efficiency (%)")
         plot3.set_ylim(60, 110)
         self.line_ve, = plot3.plot([], [], label='VE %', color='blue', lw=2)
+        
+        plot3_2 = plot3.twinx()
+        plot3_2.set_ylabel("Cd", color='orange')
+        plot3_2.set_ylim(0, 1.0)
+        self.line_cd_i, = plot3_2.plot([], [], label='Cd_i', color='orange', lw=2)
+        self.line_cd_e, = plot3_2.plot([], [], label='Cd_e', color='blue', lw=2)
+        
+        plot3.legend(loc='upper left', fontsize='small')
 
         # --- PLOT 4: TORQUE BREAKDOWN ---
         plot4.clear()

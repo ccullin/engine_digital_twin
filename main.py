@@ -55,7 +55,12 @@ class SimulationManager:
             self.engine.sensors.TPS_percent = driver_outputs.throttle_pos
             self.engine.sensors.ambient_pressure = driver_outputs.ambient_pressure
             self.engine.state.wheel_load = driver_outputs.wheel_load
-            self.engine.motoring_rpm = driver_outputs.impulse_target_rpm # default is 0 if not mode == impulse      
+            self.engine.motoring_rpm = driver_outputs.impulse_target_rpm # default is 0 if not mode == impulse    
+            
+            """TEMPORY OVERIDES TO TEST VACUUM """  
+            # self.ecu.idle_valve_position = 0.0
+            # self.engine.sensors.TPS_percent = 30.0
+            
             
             # 3. get the ecu reponse to current engine sensors
             ecu_outputs = self.ecu.update(self.engine.get_sensors())
@@ -94,7 +99,7 @@ if __name__ == "__main__":
         # if hasattr(driver.strategy, 'motoring_enabled'):
         if args.mode == "motor":
             system.ecu.fuel_enabled = args.can_spark
-            system.ecu.spark_enabled = args.can_spark
+            system.ecu.spark_enabled = args.can_spark        
             
         exit_now = False
         while cycle_count < args.cycles and not exit_now:

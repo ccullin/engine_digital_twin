@@ -135,77 +135,26 @@ class CylinderState:
 @dataclass(slots=True, frozen=False)
 class Valve:
     """Stores valve geometry and timing."""
-    open_1mm: float # set in constants
-    close_1mm: float # set in constants
-    # open_angle: float = field(init=False) # The actual start of valve lift (0.0mm), calculated
-    # close_angle: float = field(init=False) # The actual end of vavle lift (0.0mm)
     open_angle: float = field(init=False)
     close_angle: float = field(init=False)
+    open_1mm: float = field(init=False) # only used for comparison to external references
+    close_1mm: float = field(init=False) # only used for comparison to external references
     max_lift: float
     diameter: float
 
 
 @dataclass(slots=True, frozen=False)
 class Valves:
-    # Example using the VW WBX 2.1 MV Factory Specs
-    intake = Valve(
-        open_1mm=c.VALVE_TIMING['intake']['open_1mm'] % 720,
-        close_1mm=c.VALVE_TIMING['intake']['close_1mm'] % 720,
-        # open_angle=c.VALVE_TIMING['intake']['open'],
-        # close_angle=c.VALVE_TIMING['intake']['close'],
-        max_lift=c.VALVE_TIMING['intake']['max_lift'],
-        diameter=c.VALVE_TIMING['intake']['diameter']
-    )
-    
-    exhaust = Valve(
-        open_1mm=c.VALVE_TIMING['exhaust']['open_1mm'] % 720,
-        close_1mm=c.VALVE_TIMING['exhaust']['close_1mm'] % 720,
-        # open_angle=c.VALVE_TIMING['exhaust']['open'],
-        # close_angle=c.VALVE_TIMING['exhaust']['close'],
-        max_lift=c.VALVE_TIMING['exhaust']['max_lift'],
-        diameter=c.VALVE_TIMING['exhaust']['diameter']
-    )
+    intake = Valve(max_lift=c.INTAKE_MAX_LIFT, diameter=c.INTAKE_DIAM)
+    exhaust = Valve(max_lift=c.EXHAUST_MAX_LIFT, diameter=c.EXHAUST_DIAM)
     
     # pre computed vectors
     intake_lift_table: np.ndarray = field(init=False, repr=False)
     intake_area_table: np.ndarray = field(init=False, repr=False)
     exhaust_lift_table: np.ndarray = field(init=False, repr=False)
     exhaust_area_table: np.ndarray = field(init=False, repr=False)
-    
 
-    # def align_valve_timing(self, lift_table, target_open, target_close, lift_threshold=1.0):
-    #     """
-    #     Shifts the lift table so that the lift_threshold (1mm) 
-    #     aligns with the desired target_open and target_close angles.
-    #     """
-    #     # 1. Find the current 1mm points in the unaligned table
-    #     # We use your existing find_valve_timing logic here
-    #     current_open, current_close = self.find_valve_timing(lift_table, epsilon=lift_threshold)
-        
-    #     if current_open is None:
-    #         return lift_table
-
-    #     # 2. Calculate the centerlines (Target vs. Current)
-    #     # Using modulo 720 to handle the wrap-around math safely
-    #     target_centerline = ((target_open + target_close) / 2) % 720
-        
-    #     # Handle cases where the duration crosses the 720/0 boundary
-    #     if target_open > target_close:
-    #         target_centerline = ((target_open + target_close + 720) / 2) % 720
-
-    #     current_centerline = ((current_open + current_close) / 2) % 720
-    #     if current_open > current_close:
-    #         current_centerline = ((current_open + current_close + 720) / 2) % 720
-
-    #     # 3. Calculate the required shift
-    #     shift = int(round(target_centerline - current_centerline))
-        
-    #     # 4. Roll the array to align
-    #     return np.roll(lift_table, shift)
-
-
-
-    def find_valve_timing(self, lift, epsilon=1e-5):
+    def find_valve_angles(self, lift, epsilon=1e-5):
         """
         Finds actual IVO/IVC or EVO/EVC for 720-length arrays at 1 CAD resolution.
         Handles wrap-around (e.g., IVO at 710, IVC at 211).
@@ -238,74 +187,25 @@ class Valves:
             
         return int(idx_open), int(idx_close)
 
-
-
-    
-    # def __post_init__(self):
-    #     theta_range = np.arange(720)
-    #     # self.intake_lift_table = pf.calc_valve_lift_flat_follower(theta_range, self.intake) # mm
-    #     # self.intake_area_table = pf.calc_valve_area_vectorized(theta_range, self.intake, self.intake_lift_table) # m2      
-    #     # self.exhaust_lift_table = pf.calc_valve_lift_flat_follower(theta_range, self.exhaust) # mm
-    #     # self.exhaust_area_table = pf.calc_valve_area_vectorized(theta_range, self.exhaust, self.exhaust_lift_table) # m2
-        
-    #     # # record the actual valve open and close based on the flat cam follower
-    #     # self.intake.open_angle, self.intake.close_angle = self.find_valve_timing(self.intake, self.intake_lift_table)
-    #     # self.exhaust.open_angle, self.exhaust.close_angle = self.find_valve_timing(self.exhaust, self.exhaust_lift_table)
-        
-    #     # 1. Generate raw lift based on a generic "centered" assumption
-    #     raw_intake_lift = pf.calc_valve_lift_flat_follower(theta_range, self.intake.open_1mm, self.intake.close_1mm, self.intake.max_lift)
-    #     raw_exhaust_lift = pf.calc_valve_lift_flat_follower(theta_range, self.exhaust.open_1mm, self.exhaust.close_1mm, self.exhaust.max_lift)
-        
-    #     # 2. Shift it to match your 1mm constants (e.g., IVO 716, IVC 220)
-    #     self.intake_lift_table = self.align_valve_timing(raw_intake_lift, c.VALVE_TIMING['intake']['open_1mm'], c.VALVE_TIMING['intake']['close_1mm'])
-    #     self.exhaust_lift_table = self.align_valve_timing(raw_exhaust_lift, c.VALVE_TIMING['exhaust']['open_1mm'], c.VALVE_TIMING['exhaust']['close_1mm'])
-        
-    #     # 3. Now find the ACTUAL seat-to-seat timing for the simulation
-    #     self.intake.open_angle, self.intake.close_angle = self.find_valve_timing(self.intake_lift_table, epsilon=1e-5)
-    #     self.exhaust.open_angle, self.exhaust.close_angle = self.find_valve_timing(self.exhaust_lift_table, epsilon=1e-5)
-        
-    #     # 4. Generate area tables based on the shifted lift tables
-    #     self.intake_area_table = pf.calc_valve_area_vectorized(theta_range, self.intake, self.intake_lift_table) # m2      
-    #     self.exhaust_area_table = pf.calc_valve_area_vectorized(theta_range, self.exhaust, self.exhaust_lift_table) # m2
- 
     def __post_init__(self):
         theta_range = np.arange(720)
         
         # 1. Generate lift directly using the 1mm specs
-        # The function now handles the expansion to 0mm internally
         self.intake_lift_table = pf.calculate_wbx_physical_lift(c.INTAKE_DURATION_1mm, c.CENTERLINE, c.INTAKE_MAX_LIFT, is_intake=True, is_duration_at_1mm=True)
         self.exhaust_lift_table = pf.calculate_wbx_physical_lift(c.EXHAUST_DURATION_1mm, c.CENTERLINE, c.EXHAUST_MAX_LIFT, is_intake=False, is_duration_at_1mm=True)
         
-        # for CAD in range(720):
-        #     print(f"CAD:{CAD} lift_i:{self.intake_lift_table[CAD]:.5f} lift_e:{self.exhaust_lift_table[CAD]:.5f}")
-        # self.intake_lift_table = pf.calc_valve_lift_flat_follower(
-        #     theta_range, self.intake.open_1mm, self.intake.close_1mm, self.intake.max_lift
-        # )
-        
-        # self.exhaust_lift_table = pf.calc_valve_lift_flat_follower(
-        #     theta_range, self.exhaust.open_1mm, self.exhaust.close_1mm, self.exhaust.max_lift
-        # )
-        
         # 2. Extract the actual seat-to-seat timing for the dataclass records
-        self.intake.open_angle, self.intake.close_angle = self.find_valve_timing(
-            self.intake_lift_table, epsilon=1e-5
-        )
-        self.exhaust.open_angle, self.exhaust.close_angle = self.find_valve_timing(
-            self.exhaust_lift_table, epsilon=1e-5
-        )
+        self.intake.open_angle, self.intake.close_angle = self.find_valve_angles(self.intake_lift_table, epsilon=1e-5)
+        self.exhaust.open_angle, self.exhaust.close_angle = self.find_valve_angles(self.exhaust_lift_table, epsilon=1e-5)
+        self.intake.open_1mm, self.intake.close_1mm = self.find_valve_angles(self.intake_lift_table, epsilon=1.0)
+        self.exhaust.open_1mm, self.exhaust.close_1mm = self.find_valve_angles(self.exhaust_lift_table, epsilon=1.0)
         
         # 3. Calculate Area Tables
         self.intake_area_table = pf.calc_valve_area_vectorized(theta_range, self.intake, self.intake_lift_table)
         self.exhaust_area_table = pf.calc_valve_area_vectorized(theta_range, self.exhaust, self.exhaust_lift_table)    
-        
-        # print(f"DEBUG INTAKE VALVE: {self.intake}")
-        # print(f"DEBUG EXHAUST VALVE: {self.exhaust}")
-        # for CAD in range (720):
-        #     print(f"DEBUG: CAD{CAD} l_i:{self.intake_lift_table[CAD]:.5f}mm a_i:{self.intake_area_table[CAD]:.5f} "
-        #           f"l_e:{self.exhaust_lift_table[CAD]:.5f}mm a_e:{self.exhaust_area_table[CAD]:.5f}") 
-        
+         
  
-        
+    
 
 @dataclass(slots=True, frozen=False)
 class EngineState:
@@ -325,6 +225,9 @@ class EngineState:
     # state
     effective_tps: float = 0.0
     T_exhaust_manifold: float = c.T_AMBIENT
+    
+    # total engine air inflow
+    dm_in_history: np.ndarray            = field(default_factory=lambda: np.zeros(720))
  
     # Global History Buffers
     map_history: np.ndarray              = field(default_factory=lambda: np.zeros(720))
@@ -367,7 +270,7 @@ class EngineState:
      
     @property
     def map_avg_kPa(self) -> float:
-        return np.mean(self.map_history)
+        return np.mean(self.map_history) / 1000
     
     # @property
     # def friction_work_j(self) -> float:
@@ -507,25 +410,50 @@ class EngineModel:
             
             # 2. Volume and Heat Loss
             Q_in_sub = self._calculate_combustion_heat_substep(CAD, substep, substep_size, ecu_outputs.spark)
-            Q_loss_sub = pf.calc_woschni_heat_loss(CAD=CAD + (substep * substep_size), rpm=self.sensors.rpm, cyl=self.cyl, valves=self.valves)
-            Q_loss_sub_joules = Q_loss_sub * substep_size
+            Q_loss_deg = pf.calc_woschni_heat_loss(CAD=CAD + (substep * substep_size), rpm=self.sensors.rpm, cyl=self.cyl, valves=self.valves)
+            Q_loss_sub = Q_loss_deg * substep_size
             
             Q_in_step_sum += Q_in_sub
-            Q_loss_step_sum += Q_loss_sub_joules
-            self.cyl.Q_loss_total += Q_loss_sub_joules # track total per cyl for cyl wall T update at end of cycle.
+            Q_loss_step_sum += Q_loss_sub
+            self.cyl.Q_loss_total += Q_loss_sub # track total per cyl for cyl wall T update at end of cycle.
 
             # 3. Integrate First Law
             # Note: We pass the CURRENT mass here. The integrator handles dM/dtheta.
-            P_next, T_next = pf.integrate_first_law(
-                P_curr=P_curr, T_curr=T_curr, M_curr=self.cyl.total_mass_kg,
-                V_curr=V_curr, Delta_M=deltas["dm_tot"], 
-                Delta_Q_in=Q_in_sub, Delta_Q_loss=Q_loss_sub,
-                dV_d_theta=dV_d_theta, 
-                R_spec_blended=self.cyl.R_specific_blend,
-                gamma_blended_start=self.cyl.gamma_blend, 
-                theta_delta=substep_size, T_manifold=deltas["T_inflow"], 
-                cycle=self._cycle_count, CAD=CAD, substep=substep
+            # P_next, T_next = pf.integrate_first_law_old(
+            #     P_curr=P_curr, T_curr=T_curr, M_curr=self.cyl.total_mass_kg,
+            #     V_curr=V_curr, Delta_M=deltas["dm_tot"], 
+            #     Delta_Q_in=Q_in_sub, Delta_Q_loss=Q_loss_sub,
+            #     dV_d_theta=dV_d_theta, 
+            #     R_spec_blended=self.cyl.R_specific_blend,
+            #     gamma_blended_start=self.cyl.gamma_blend, 
+            #     theta_delta=substep_size, T_manifold=deltas["T_inflow"], 
+            #     cycle=self._cycle_count, CAD=CAD, substep=substep
+            # )
+
+            dV = self.cyl.dV_list[CAD] * substep_size
+            M_curr = self.cyl.total_mass_kg
+            P_next, T_next = pf.integrate_first_law(CAD=CAD, P_curr=P_curr, T_curr=T_curr, M_curr=M_curr, V_curr=V_curr, 
+                        Delta_Q_in=Q_in_sub,            # Joules (absolute)
+                        Delta_Q_loss=Q_loss_sub,        # Joules (absolute)
+                        dV=dV,                          # m3 (absolute)
+                        Delta_M=deltas["dm_tot"],       # kg (absolute)
+                        R_spec=self.cyl.R_specific_blend, T_manifold=deltas["T_inflow"],
+                        lambda_=self.sensors.lambda_
             )
+            
+            # Modulo check: Cycle 2 (3rd cycle), every 10 degrees (100 substeps)
+            # if self._cycle_count == 2 and CAD % 100 == 0 and (substep == 0):
+            #     # Calculate Work and Heat as rates for easier comparison
+            #     # substep_size is likely 0.1
+            #     print(f"\n--- INTEGRATION DEBUG [CAD: {CAD:.1f}] ---")
+            #     print(f"  STATE IN:  P={P_curr/1e5:.3f} bar, T={T_curr:.1f} K, M={M_curr*1e6:.4f} mg")
+            #     print(f"  INPUTS:    Q_in={Q_in_sub:.4f} J, Q_loss={Q_loss_sub:.4f} J, dV={dV*1e6:.4f} cm3")
+            #     print(f"  ENERGY:    dU = {(Q_in_sub - Q_loss_sub - (P_curr * dV)):.4f} J")
+            #     print(f"  STATE OUT: P_next={P_next/1e5:.3f} bar, T_next={T_next:.1f} K")
+                
+            #     # Check for the Ideal Gas Law consistency
+            #     P_check = ( (M_curr + deltas['dm_tot']) * self.cyl.R_specific_blend * T_next ) / (V_curr + dV)
+            #     print(f"  IGL CHECK: P_calc={P_check/1e5:.3f} bar (Error: {(P_next - P_check):.2f} Pa)")
             
 
             # 4. ATOMIC STATE UPDATE
@@ -535,9 +463,9 @@ class EngineModel:
             # f_exh is implicitly (1 - f_air - f_fuel)
             
             TOL = 1e-8
-            if 210 < CAD < 460:
-                if deltas["dm_i"] > TOL: print(f"WANRING: dm_in:{deltas["dm_i"]:.2e} >0 between IVC and EVO at CAD:{CAD}")
-                if deltas["dm_e"] < -TOL: print(f"WANRING: dm_out:{deltas["dm_e"]:.2e} <0 between IVC and EVO at CAD:{CAD}")
+            if self.valves.intake.close_angle < CAD < self.valves.exhaust.open_angle:
+                if deltas["dm_i"] > TOL: print(f"WANRING: dm_in:{deltas['dm_i']:.2e} >0 between IVC and EVO at CAD:{CAD}")
+                if deltas["dm_e"] < -TOL: print(f"WANRING: dm_out:{deltas['dm_e']:.2e} <0 between IVC and EVO at CAD:{CAD}")
 
             # --- INTAKE PORT FLOW ---
             if deltas["dm_i"] > 0:
@@ -621,7 +549,14 @@ class EngineModel:
                                          )
         
         # --- set MAP using latest rpm
-        map_Pa = pf.update_intake_manifold_pressure(effective_tps, self.sensors.rpm)    
+        # map_Pa = pf.update_intake_manifold_pressure(effective_tps, self.sensors.rpm) 
+        # map_Pa = pf.update_intake_manifold_pressure(current_map=self.sensors.P_manifold_Pa,
+        #                                             effective_tps=effective_tps,
+        #                                             rpm=self.sensors.rpm,
+        #                                             crank_angle=CAD,
+        #                                             iat_k=self.sensors.IAT_K,
+        #                                             dV_list=self.cyl.dV_list)  
+        map_Pa = self._update_map(CAD=CAD)
         self.sensors.P_manifold_Pa = map_Pa
         self.state.map_history[CAD] = map_Pa
 
@@ -654,10 +589,11 @@ class EngineModel:
         dm_i = dm_i_raw * dt
         
         # Exhaust
+        P_exhaust = pf.update_exhaust_pressure(rpm=self.sensors.rpm, ambient=self.sensors.ambient_pressure)
         dm_e_raw, Cd_e = pf.calc_isentropic_flow(
             A_e, L_e, self.valves.exhaust.diameter,
             P_cyl=self.cyl.P_curr, T_cyl=self.cyl.T_curr, R_cyl=self.cyl.R_specific_blend, g_cyl=self.cyl.gamma_blend,
-            P_extern=c.P_ATM_PA, T_extern=self.state.T_exhaust_manifold, R_extern=c.R_SPECIFIC_EXHAUST, g_extern=c.GAMMA_EXHAUST,
+            P_extern=P_exhaust, T_extern=self.state.T_exhaust_manifold, R_extern=c.R_SPECIFIC_EXHAUST, g_extern=c.GAMMA_EXHAUST,
             rpm=self.sensors.rpm, is_intake=False
         )
         dm_e = dm_e_raw * dt
@@ -679,9 +615,11 @@ class EngineModel:
         if dm_i > 0:
             mass_in += dm_i
             weighted_T += dm_i * c.T_AMBIENT
+  
         if dm_e > 0:
             mass_in += dm_e
             weighted_T += dm_e * self.state.T_exhaust_manifold
+          
         if dm_f > 0:
             mass_in += dm_f
             weighted_T += dm_f * c.T_FUEL_K
@@ -689,11 +627,25 @@ class EngineModel:
         # T_inflow = weighted_T / mass_in if mass_in > 1e-18 else self.cyl.T_curr
         T_inflow = weighted_T / mass_in if mass_in > 1e-18 else c.T_AMBIENT
         
+        # update intake manifold temperature 
         if dm_i > 1e-9:           
             # Simple low-pass filter to emulate sensor lag and avoid 
             # fluctuations from backflow/residual heat
             alpha = 0.05 
             self.sensors.IAT_K = (1 - alpha) * self.sensors.IAT_K + alpha * T_inflow
+        elif dm_i < 0:
+            # no mass change as gas flow into intake manifold
+            # heat up intake manifold
+            reversion_alpha = 0.02
+            self.sensors.IAT_K = (1 - reversion_alpha) * self.sensors.IAT_K + (reversion_alpha * self.cyl.T_curr)
+         
+        # update exhanust manifold temperature 
+        if dm_e <0:
+            # no mass change but exhaust is heating up
+            # alpha simulates the thermal mass of the heavy cast-iron WBX manifold
+            manifold_alpha = 0.05 
+            self.state.T_exhaust_manifold = (1 - manifold_alpha) * self.state.T_exhaust_manifold + (manifold_alpha * self.cyl.T_curr)
+          
         
         # print(f"DEBUG T_INTAKE: CAD:{self.state.current_theta} T_inflow:{T_inflow} Weighted_T:{weighted_T} mass_in:{mass_in}")
 
@@ -713,7 +665,7 @@ class EngineModel:
 
         # NEW: Get temperature-dependent cv for the dominant species
         # This replaces the static c.R / (c.GAMMA - 1) calculation
-        cv_air_dyn = pf.calc_specific_heat_cv(self.cyl.T_curr) # Dynamic based on T
+        cv_air_dyn = pf.calc_specific_heat_cv(self.cyl.T_curr, self.sensors.lambda_) # Dynamic based on T
         cv_fuel = c.R_SPECIFIC_FUEL / (c.GAMMA_FUEL - 1.0) # Fuel remains constant
         cv_exh_dyn = cv_air_dyn * 1.05 # Exhaust products typically have ~5% higher cv
 
@@ -726,6 +678,27 @@ class EngineModel:
         # Update state
         self.cyl.R_specific_blend = R_blend
         self.cyl.gamma_blend = (R_blend / cv_blend) + 1
+        
+    # def _update_gas_properties(self):
+    #     m_total = max(self.cyl.total_mass_kg, 1e-9)
+        
+    #     # Calculate how much has burned vs what we started with
+    #     if self.cyl.total_mass_at_spark > 0:
+    #         # Progress from 0.0 to 1.0
+    #         burned_fraction = self.cyl.cumulative_heat_released / max(self.cyl.total_cycle_heat_J, 1.0)
+    #     else:
+    #         burned_fraction = 0.0
+
+    #     # Fresh mixture R (Air + Fuel Vapor)
+    #     # At lambda 0.88, R_fresh is actually ~275 because fuel vapor is heavy
+    #     R_fresh = (c.R_SPECIFIC_AIR * 14.7 + c.R_SPECIFIC_FUEL * 1.0) / 15.7
+    #     R_burned = c.R_SPECIFIC_EXHAUST # 271.5
+
+    #     # Blended R
+    #     R_blend = (1.0 - burned_fraction) * R_fresh + (burned_fraction * R_burned)
+        
+    #     # Update state
+    #     self.cyl.R_specific_blend = R_blend
         
         
     def _calculate_combustion_heat_substep(self, CAD, substep, substep_size, spark_command):
@@ -750,28 +723,37 @@ class EngineModel:
             self.cyl.total_mass_at_spark = self.cyl.total_mass_kg
             self.sensors.afr = (self.cyl.air_mass_kg / self.cyl.fuel_mass_kg) if self.cyl.fuel_mass_kg > 0 else 99.0
             
-            # Determine total energy 'bucket' with 0.97 efficiency for peak power
-            # eff = 0.97 if 0.85 <= self.sensors.lambda_ <= 1.05 else 0.85
-            # eff = 0.94 if 0.8 <= self.sensors.lambda_ <= 1.1 else 0.80
-            # if self.sensors.lambda_ < 1.0:
-            #     self.cyl.total_cycle_heat_J = (self.cyl.air_mass_kg / 14.7) * c.LHV_FUEL_GASOLINE * eff
-            # else:
-            #     self.cyl.total_cycle_heat_J = self.cyl.fuel_mass_kg * c.LHV_FUEL_GASOLINE * eff
-            
+            # Total theorectical energy based on 100% stoich efficiency 
             # First principles: Energy is limited by whichever reactant is depleted first (Stoichiometry)
             stoich_fuel_req = self.cyl.air_mass_kg / 14.7
-
             # Theoretical max energy available if 100% efficient
             theoretical_max_energy = min(self.cyl.fuel_mass_kg, stoich_fuel_req) * c.LHV_FUEL_GASOLINE
 
-            # Combustion Efficiency should be a function of physics (e.g., turbulence, temp)
-            # For now, keep it as a constant, but separate it from the energy math
-            combustion_efficiency = 0.95 
-            self.cyl.total_cycle_heat_J = theoretical_max_energy * combustion_efficiency
 
+            # add Burn Stability and ignition reality
+            # 1. Air Mass Limit (Density)
+            # 0.00004 kg is roughly the 'Stall' threshold for a 525cc cylinder
+            air_factor = np.clip((self.cyl.air_mass_kg - 0.00003) / (0.00007 - 0.00003), 0.0, 1.0)
+            
+            # 2. Lambda Limit (Flammability)
+            # Peak at 0.9, zero at 0.35 or 1.6
+            lambda_factor = np.clip(1.0 - 2.5 * (self.sensors.lambda_ - 0.9)**2, 0.0, 1.0)
+            
+            # Combined Ignitability
+            ignitability = air_factor * lambda_factor
+            
+            if ignitability < 0.1: # Hard Misfire
+                self.cyl.total_cycle_heat_J = 0.0
+                self.cyl.combustion_active = False # Spark failed to catch
+                return 0.0 
+            
+            
+            # Apply ignitability to the total energy bucket
+            self.cyl.total_cycle_heat_J = theoretical_max_energy * ignitability
+            
+            # define Weibe parameters for combustion
             self.cyl.burn_duration = pf.get_burn_duration(self.sensors.rpm, self.sensors.lambda_)
-            # self.cyl.m_vibe = max(1.5, 2.5 - (self.sensors.rpm / 4000.0))
-            self.cyl.m_vibe = max(2.5, 3.5 - (self.sensors.rpm / 4000.0))
+            self.cyl.m_vibe = pf.calc_physical_m_vibe(rpm=self.sensors.rpm, lambda_val=self.sensors.lambda_)
 
         # 2. Execution Logic
         # Use precise theta to ensure we don't 'miss' the start due to substep alignment
@@ -789,26 +771,22 @@ class EngineModel:
             self.cyl.cumulative_heat_released += dQ_combustion
 
             # 3. Completion and 'The Snap'
-            completion_ratio = 0.0
-            if self.cyl.total_cycle_heat_J > 0:
-                completion_ratio = self.cyl.cumulative_heat_released / self.cyl.total_cycle_heat_J
-            
-            out_of_fuel = self.cyl.fuel_mass_kg < 1e-12
-            out_of_air = self.cyl.air_mass_kg < 1e-12
-            
-            if completion_ratio >= 0.995 or out_of_fuel or out_of_air:
-                final_snap_joules = max(0.0, self.cyl.total_cycle_heat_J - self.cyl.cumulative_heat_released)
-                
+            fuel_consumed = self.cyl.fuel_mass_at_spark - self.cyl.fuel_mass_kg
+            potential_fuel_to_burn = min(self.cyl.fuel_mass_at_spark, self.cyl.air_mass_at_spark / 14.7)
+            completion_ratio = fuel_consumed / potential_fuel_to_burn
+
+            if completion_ratio >= 0.999: # or out_of_fuel or out_of_air:
+                final_snap_joules = max(0.0, self.cyl.total_cycle_heat_J - self.cyl.cumulative_heat_released)              
                 # IMPORTANT: Add the snap to the dQ we are returning for THIS substep
                 dQ_combustion += final_snap_joules
                 self.cyl.cumulative_heat_released += final_snap_joules
-                
+
                 # Mass cleanup
                 if self.sensors.lambda_ < 1.0:
                     self.cyl.air_mass_kg = 0.0
                 else:
                     self.cyl.fuel_mass_kg = 0.0
-
+                
                 self.cyl.combustion_active = False
 
             # Return the total energy released in this substep (Wiebe slice + any Snap)
@@ -888,6 +866,41 @@ class EngineModel:
         #         f"T_Friction:{np.average(self.state.torque_friction_history):6.2f}Nm | "
         #         f"T_Net:{np.average(self.state.torque_brake_history):6.2f}Nm | "
         #         f"RPM_Delta:{rpm_delta:8.4f}")
+
+    def _update_map(self, CAD):
+        # total_dv = 0.0
+        # for offset in [0, 180, 360, 540]:
+        #     cyl_cad = (CAD + offset) % 720
+        #     if self.valves.intake.open_angle <= cyl_cad < self.valves.intake.close_angle:
+        #         total_dv += self.cyl.dV_list[cyl_cad]
+        
+        # map = pf.update_intake_manifold_pressure(
+        #     current_map = self.sensors.P_manifold_Pa, 
+        #     effective_tps=self.state.effective_tps,
+        #     rpm=self.sensors.rpm, 
+        #     iat_k=self.sensors.IAT_K, 
+        #     total_dv=total_dv
+        #     )
+          
+        total_dm_in = (
+            self.cyl.dm_in_history[CAD] +
+            self.cyl.dm_in_history[(CAD + 180) % 720] +
+            self.cyl.dm_in_history[(CAD + 360) % 720] +
+            self.cyl.dm_in_history[(CAD + 540) % 720]
+        )
+        self.state.dm_in_history[CAD] = total_dm_in
+            
+        map = pf.update_intake_manifold_pressure(
+            current_map = self.sensors.P_manifold_Pa, 
+            effective_tps=self.state.effective_tps,
+            rpm=self.sensors.rpm, 
+            iat_k=self.sensors.IAT_K, 
+            dm_in_engine=total_dm_in
+            )
+        
+        return map
+
+
 
     # ----------------------------------------------------------------------
     def _handle_step_init(self, CAD, ecu):  
@@ -1007,14 +1020,16 @@ class EngineModel:
     def _update_thermal_state(self):
         avg_torque_brake = np.average(self.state.torque_brake_history)
         avg_rpm = np.average(self.sensors.rpm_history)
-        self.sensors.CLT_C = pf.update_coolant_temp(self.sensors.CLT_C, avg_torque_brake, avg_rpm)
+        new_clt_C = pf.update_coolant_temp(self.sensors.CLT_C, avg_torque_brake, avg_rpm)
+        self.sensors.CLT_C = new_clt_C
         
-        self.cyl.T_wall = pf.update_cylinder_wall_temperature(
+        new_T_wall = pf.update_cylinder_wall_temperature(
             self.sensors.CLT_C, 
             self.cyl.Q_loss_total, 
             avg_rpm,
             self.cyl.T_wall
         )
+        self.cyl.T_wall = new_T_wall
         
     # ----------------------------------------------------------------------
     def _is_dead_center(self, theta, tolerance=1e-3):
@@ -1076,9 +1091,10 @@ class EngineModel:
         self.state.torque_friction_global = global_parasitic
         self.state.torque_friction_global_history[CAD] = global_parasitic
         
-
+        pumping_loss_nm = pf.calc_pumping_losses_nm(self.sensors.P_manifold_Pa)
+        
          
-        return t_fric_4cyl + global_parasitic
+        return t_fric_4cyl + global_parasitic + pumping_loss_nm
         
     
     
@@ -1095,14 +1111,14 @@ class EngineModel:
         self.state.IMEP_gross = (self.state.work_gross_indicated_j / v_disp) / 1e5
 
         # 2. FMEP (Friction): Pressure "lost" to mechanical friction
-        self.state.FMEP = (self.state.work_friction_j / v_disp) / 1e5
+        self.state.FMEP = abs((self.state.work_friction_j / v_disp) / 1e5)
         
         # 3. Pumping MEP (The 'cost' of breathing)
-        self.state.PMEP = (self.state.work_pumping_j / v_disp) / 1e5
+        self.state.PMEP = abs((self.state.work_pumping_j / v_disp) / 1e5)
 
         # 4. BMEP (Brake): Actual pressure available to do work at the crankshaft
         # BMEP = IMEP - FMEP
-        self.state.BMEP = (self.state.IMEP_net + self.state.FMEP)
+        self.state.BMEP = (self.state.IMEP_net - self.state.FMEP)
 
         # 5. Mechanical Efficiency
         self.state.mechanical_efficiency = self.state.BMEP / self.state.IMEP_net if self.state.IMEP_net > 0 else 0
@@ -1143,7 +1159,7 @@ class EngineModel:
         
         # Gross and Net (Scalars) excludes pumping losses
         # Net Indicated is the sum of the WHOLE cycle
-        work_net_indicated_scalar = np.sum(work_engine_720) / 1.0 
+        work_net_indicated_scalar = np.sum(w_cyl_array) * c.NUM_CYL
         work_gross_indicated_scalar = (np.sum(w_cyl_array[180:360]) + np.sum(w_cyl_array[360:540])) * c.NUM_CYL
         
         # 4. Store SCALARS in state

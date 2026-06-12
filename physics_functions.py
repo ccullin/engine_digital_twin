@@ -9,6 +9,7 @@
 #
 # Copyright (c) 2025 Chris Cullin
 
+# from __future__ import annotations
 from scipy.ndimage import maximum_filter1d
 from typing import TYPE_CHECKING
 import numpy as np
@@ -61,17 +62,26 @@ def v_cyl(theta, A_piston, CV):
 # --- Thermal Cycle Functions (Heat & Work) ---
 
 def calc_wiebe_fraction(theta, ignition_start_theta, burn_duration, a_vibe, m_vibe):
-    """ this version is not sub-step friendly, so changed approach to fraction """
-    
+    """ 
+    standard wiebe that calculates the total burn energy during  combusion 
+    A return of 0.0 is before the burn a 1.0 is after the burn.
+    """
+        
     delta_theta = theta - ignition_start_theta
+    if delta_theta < -360:
+        delta_theta += 720
+    elif delta_theta > 360:
+        delta_theta -= 720
+    
     
     if delta_theta <= 0:
         return 0.0
     if delta_theta >= burn_duration:
         return 1.0
-        
-    # The standard Wiebe cumulative S-curve formula
-    return 1.0 - np.exp(-a_vibe * (delta_theta / burn_duration) ** (m_vibe + 1))
+    
+    burn_energy_accumulative_J = 1.0 - np.exp(-a_vibe * (delta_theta / burn_duration)**(m_vibe + 1))
+    
+    return burn_energy_accumulative_J
 
 
 def calc_woschni_heat_loss(CAD, rpm, cyl:CylinderState, valves:Valves):
@@ -103,10 +113,12 @@ def calc_woschni_heat_loss(CAD, rpm, cyl:CylinderState, valves:Valves):
     
     # Set C1 and C2
     if spark <= CAD < EVO:
-        C1, C2 =  2.28, 0.00324# c2 was 0.00324
+        C1, C2 =  2.28, 0.003# c2 was 0.00324
+        # C1, C2 = 2.8, 0.00324
     # Phase 2: Compression (from IVC to Spark)
     elif IVC <= CAD < spark:
         C1, C2 =  2.28, 0.0 
+        # C1, C2 =  2.8, 0.0 
     # Phase 3: Gas Exchange (Exhaust and Intake)
     else:
         C1, C2 =  6.18, 0.0
@@ -138,15 +150,16 @@ def calc_woschni_heat_loss(CAD, rpm, cyl:CylinderState, valves:Valves):
 
     # 4. Heat Transfer Coefficient h_g
     # Using the standard SI Woschni correlation:
-    h_g = 3.26 * (c.BORE**-0.2) * (P_curr_kPa**0.8) * (T_curr**-0.53) * (W_vel**0.8)
-    # h_g = 3.26 * (c.BORE**-0.2) * (P_curr_kPa**0.8) * (T_curr**-0.55) * (W_vel**0.8)
+    # h_g = 3.26 * (c.BORE**-0.2) * (P_curr_kPa**0.8) * (T_curr**-0.53) * (W_vel**0.8)
+    h_g = 3.26 * (c.BORE**-0.2) * (P_curr_kPa**0.8) * (T_curr**-0.55) * (W_vel**0.8)
 
     # 5. Instantaneous Surface Area (A_w)
     # Cylinder wall area = pi * Bore * instantaneous_height
     # Instantaneous height x = V_curr / A_piston
     V_bore = V_curr - V_clearance
     dist_from_tdc = V_bore / c.A_PISTON
-    A_w = (2 * c.A_PISTON) + (np.pi * c.BORE * dist_from_tdc)
+    # A_w = (2 * c.A_PISTON) + (np.pi * c.BORE * dist_from_tdc)
+    A_w = (c.A_PISTON * 1.3) + c.A_PISTON + (np.pi * c.BORE * dist_from_tdc) # allows for wbx curved head shape
 
     # 6. Heat Loss Rate & Conversion in Joules/sec
     # dQ/dt = h_g * A * (T_gas - T_wall)
@@ -160,8 +173,8 @@ def calc_woschni_heat_loss(CAD, rpm, cyl:CylinderState, valves:Valves):
     
     # # Scale heat transfer based on RPM to allow starting
     # # normall 0.8-1.2.  1.66 suggests T_wall is set too high or your combustion is too fast
-    # thermal_scaling = 1.2 # was 1.2, 0.95, 
-    thermal_scaling = 1.25
+    thermal_scaling = 0.85 # was 1.2, 0.95, 
+    # thermal_scaling =  1.5 #2.5 1.5 # 1.25
 
     # Convert J/s to J/deg: (dQ/dt) / (dtheta/dt) * (rad to deg)
     if rpm < 1.0: 
@@ -354,7 +367,7 @@ def calculate_wbx_physical_lift(duration, centerline, max_lift, is_intake: bool,
     
     # 1. FLAT-TAPPET DWELL (The 'Fatness' of the 24mm Follower)
     # A 24mm lifter on an 8-9mm lift cam typically plateaus for ~4-5 degrees.
-    dwell_half_angle = 2.5  # Total 5 degree 'flat' peak
+    dwell_half_angle = 5.0 #2.5  # Total 5 degree 'flat' peak
     
     if is_duration_at_1mm:
         # Solve for theoretical seat duration to hit 1mm at duration/2
@@ -516,14 +529,25 @@ def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl,
     if A_valve < 1e-9 or lift < 1e-5:
         return 0.0, 0.0
 
-    # --- START HIGHLIGHT: RAM EFFECT CALCULATION ---
     # Simulates air momentum in the intake runner. 
-    # 2.5 kPa is a baseline for 3000 RPM on a WBX; it scales with RPM squared.
-    ram_boost = 0.0
-    # if is_intake:
-    #     ram_boost = (rpm / 3000)**2 * 600.0 # Reduced from 2500.0
+    # # 2.5 kPa is a baseline for 3000 RPM on a WBX; it scales with RPM squared.
+    # ram_boost = 0.0
+    # if is_intake and rpm > 1500:
+    #     # ram_boost = (rpm / 3000)**2 * 1200.0 # Reduced from 2500.0
+    #     ram_boost = (rpm / 2800)**2 * 3600.0
+    ram_boost = 0
+    
+    # # Current: (rpm / 2800)**2 * 3600.0
+    # # At 3000 RPM = 4132 Pa (0.04 bar)
+    # # At 4500 RPM = 9298 Pa (0.09 bar) -> This is likely too high for a stock plenum
+
+    # # Proposed: Use a Sigmoid or Clip to simulate 'Tuning Peak'
+    # # This keeps the 'hit' at 3000 but prevents it from becoming a 'Turbo' at 4500.
+    # tuning_peak_rpm = 3200
+    # ram_scale = np.clip(rpm / tuning_peak_rpm, 0, 1.2)**2 
+    # ram_boost = ram_scale * 3200.0 # Max boost of ~0.032 bar
         
-    # --- END HIGHLIGHT ---
+
 
     # Identify Upstream (Source) and Downstream (Sink)
     if P_cyl >= (P_extern + ram_boost): # HIGHLIGHT: Added ram_boost to threshold
@@ -542,16 +566,10 @@ def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl,
     pr = P_down / max(P_up, 1.0)
     pr_crit = (2.0 / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
     
-    Cd = _calc_physics_Cd(lift, diameter, is_intake)
-    # if is_intake:
-    #     Cd = 0.55
-    # else: 
-    #     Cd = 0.7
-    # NEW LOGIC: If air is trying to blow BACK into the intake, 
-    # it faces different resistance/physics than coming in.
-    # if is_intake and direction == -1.0:
-    #     # If we want to LOWER VE, we increase this multiplier to let air escape.
-    #     Cd *= 1.2 
+    Cd = _calc_wbx_valve_cd(lift, diameter, is_intake, rpm)
+    # Cd = _calc_wbx_valve_cd(lift, diameter, is_intake)
+    # Cd = 0.2 if is_intake and rpm <2000 else Cd
+    Cd = 0.7
 
     if pr <= pr_crit:
         # Choked Flow
@@ -561,6 +579,16 @@ def calc_isentropic_flow(A_valve, lift, diameter, P_cyl, T_cyl, R_cyl, g_cyl,
         pr_eff = min(pr, 0.9999)
         mdot = (Cd * A_valve * P_up * np.sqrt(2 * gamma / (R_up * T_up * (gamma - 1)) * (pr_eff**(2/gamma) - pr_eff**((gamma+1)/gamma))))
         
+    # low RPM correct as flow is never resistance free even when internal and external pressures are nearly equal.
+    # NEW CODE: Smooth transition using hyperbolic tangent to avoid the 'step' glitch.
+    # This removes the hard 'if < 5000' gate.
+    pressure_delta = abs(P_up - P_down)
+    # Scales smoothly from ~0.8 at low delta to 1.0 at high delta
+    resistance_factor = 0.8 + 0.2 * np.tanh(pressure_delta / 2500.0)
+    resistance_factor = 0.2 + 0.8 * np.tanh(pressure_delta / 5000.0)
+    mdot *= resistance_factor
+    
+    # gas velocity penalty    
     penalty = _calc_sonic_penalty(mdot, P_up, T_up, R_up, gamma, A_valve, Cd, is_intake)
     mdot *= penalty
 
@@ -578,14 +606,17 @@ def _calc_sonic_penalty(mdot, P_up, T_up, R_up, gamma, Area, Cd, is_intake):
     
     # Asymmetrical thresholds
     # Intake chokes earlier due to lower pressure differentials
-    limit = 0.42 if is_intake else 0.60 
+    # Raise intake limit slightly to allow 4800 RPM flow
+    limit = 0.40 if is_intake else 0.60 #was 0.55 0.45 0.41
     
     if mach > limit:
-        # Increase the multiplier (5.0) to make the drop steeper
-        penalty = np.clip(1.0 - 5.0 * (mach - limit)**2, 0.1, 1.0)
+        # We need a curve that is steeper than 5.0 but softer than 18.0
+        # 12.0 is the mathematical 'mid-point' for a 4800 RPM roll-off gives peak at 4600
+        penalty = np.clip(1.0 - 20.0 * (mach - limit)**2, 0.1, 1.0)
         return penalty
     
     return 1.0
+
 
 """ TOO EFFICIENT FOR A STOCK ENGINE """    
 
@@ -685,31 +716,186 @@ def _calc_sonic_penalty(mdot, P_up, T_up, R_up, gamma, Area, Cd, is_intake):
     
 #     return min(final_cd, cap)
 
-def _calc_physics_Cd(lift, diameter, is_intake=True):
-    if lift <= 0.0005: return 0.0
-    ld_ratio = lift / diameter
+# def _calc_physics_Cd(lift, diameter, is_intake=True):
+#     if lift <= 0.0005: return 0.0
+#     ld_ratio = lift / diameter
+    
+#     if is_intake:
+#         # Increase target to 0.56 to lower PMEP and flatten mid-range torque
+#         target_cd = 0.56  
+        
+#         # Use a convex ramp (0.7) to let air in easier at low/mid lift
+#         # This prevents the torque from nose-diving at 3200 RPM.
+#         # ramp = min(1.0, (lift / 2.2)**0.7) 
+#         # Change from 0.7 to 1.5 to simulate valve seat restriction
+#         ramp = min(1.0, (lift / 2.2)**1.5)
+        
+#         # Subtle boost at mid-lift ld_ratio
+#         boost = 0.02 * np.exp(-((ld_ratio - 0.15)**2) / 0.01)
+        
+#         cd = (target_cd * ramp) + boost
+#         cap = 0.60 # Higher cap than before, let the Mach Penalty handle the RPM limit
+#     else:
+#         # Exhaust needs to be freer to pass the PMEP < 0.25 test
+#         target_cd = 0.58
+#         cap = 0.65
+#         ramp = min(1.0, (lift / 1.5)**0.8)
+#         cd = (target_cd * ramp)
+        
+#     return min(cd, cap)
+
+# def _calc_physics_Cd(lift, diameter, is_intake=True):
+#     if lift <= 0.0005: return 0.0
+    
+#     # 1. THE RAMP (Valve Curtain Restriction)
+#     # Using a slightly higher exponent (1.8-2.0) keeps it restrictive at low lift.
+#     # We normalize by an expected "Full Lift" (e.g., 9.0mm)
+#     # norm_lift = lift / 9.0 
+#     # ramp = norm_lift**2.0
+    
+#     # Normalize by your actual max lift (e.g., 9.5mm)
+#     # This spreads the 'opening' effect across the whole cam lobe.
+#     norm_lift = np.clip(lift / 6, 0.0, 1.0) # was 9.5
+#     ramp = norm_lift**1.5 # 1.5 is a natural curve; 2.0 is more restrictive early
+    
+#     # 2. THE SATURATION (Port Restriction)
+#     # Using tanh or a soft-clamping function makes the top "flat" 
+#     # and prevents the sinusoidal look.
+#     max_efficiency = 0.55 if is_intake else 0.58
+#     cd = max_efficiency * np.tanh(ramp * 3.0) 
+    
+#     # 3. THE "CAP" (Hard Physical Limit)
+#     return min(cd, max_efficiency)
+
+# def _calc_physics_Cd(lift, diameter, is_intake=True):
+#     """
+#     Calculates the Discharge Coefficient (Cd) based on L/D ratio.
+#     Reference: Heywood, Internal Combustion Engine Fundamentals.
+#     """
+#     if lift <= 0:
+#         return 0.0
+    
+#     # Calculate Lift-to-Diameter ratio
+#     l_d = lift / diameter
+    
+#     # Define Peak Cd (Standard 2-valve head values)
+#     # A WBX head isn't a high-flow racing head; 0.65-0.70 is realistic.
+#     peak_cd = 0.68 if is_intake else 0.63
+    
+#     # Empirical Cd curve fit
+#     # Standard profile: starts low, rises steeply, plateaus around L/D = 0.25-0.3
+#     if l_d < 0.25:
+#         # Quadratic/Polynomial ramp up
+#         # This creates a smooth 'S' shape rather than a linear snap
+#         cd = peak_cd * (1.0 - (1.0 - (l_d / 0.25))**2)
+#     else:
+#         # Plateau with very slight increase for high lift
+#         cd = peak_cd + (l_d - 0.25) * 0.05
+    
+#     # Physical cap: No production 2V head exceeds 0.75-0.80 
+#     return min(cd, 0.75)
+
+# import numpy as np
+
+# def _calc_wbx_valve_cd(lift, diameter, is_intake=True):
+#     if lift <= 0: return 0.0
+#     ld = lift / diameter
+    
+#     if is_intake:
+#         # For 8/40 ratio (max ld = 0.20)
+#         peak_cd = 0.68
+#         optimal_ld = 0.22 # Intake stays curtain-limited throughout
+#         base_cd = 0.25
+#         if ld <= optimal_ld:
+#             cd = base_cd + (peak_cd - base_cd) * np.sin((ld / optimal_ld) * (np.pi / 2))
+#         else:
+#             cd = peak_cd * np.exp(-1.5 * (ld - optimal_ld))
+#     else:
+#         # For 9/34 ratio (max ld = 0.26)
+#         peak_cd = 0.63
+#         optimal_ld = 0.22 # Exhaust transitions to port-limited at the end of lift
+#         base_cd = 0.45 #0.30    # Higher floor helps bleed the 720-deg spike
+#         if ld <= optimal_ld:
+#             cd = base_cd + (peak_cd - base_cd) * np.sin((ld / optimal_ld) * (np.pi / 2))
+#         else:
+#             cd = peak_cd * np.exp(-1.2 * (ld - optimal_ld))
+            
+#     return max(cd, 0.15) # .35
+
+def _calc_wbx_valve_cd(lift, diameter, is_intake, rpm):
+    if lift <= 0: return 0.0
+    ld = lift / diameter
     
     if is_intake:
-        # Increase target to 0.56 to lower PMEP and flatten mid-range torque
-        target_cd = 0.56  
-        
-        # Use a convex ramp (0.7) to let air in easier at low/mid lift
-        # This prevents the torque from nose-diving at 3200 RPM.
-        ramp = min(1.0, (lift / 2.2)**0.7) 
-        
-        # Subtle boost at mid-lift ld_ratio
-        boost = 0.02 * np.exp(-((ld_ratio - 0.15)**2) / 0.01)
-        
-        cd = (target_cd * ramp) + boost
-        cap = 0.60 # Higher cap than before, let the Mach Penalty handle the RPM limit
+        peak_cd = 0.68
+        optimal_ld = 0.22 
+        # Lower base_cd to 0.15 forces air to 'wait' for higher lift
+        base_cd = 0.15 
+        if ld <= optimal_ld:
+            cd = base_cd + (peak_cd - base_cd) * np.sin((ld / optimal_ld) * (np.pi / 2))
+        else:
+            cd = peak_cd * np.exp(-1.5 * (ld - optimal_ld))
     else:
-        # Exhaust needs to be freer to pass the PMEP < 0.25 test
-        target_cd = 0.58
-        cap = 0.65
-        ramp = min(1.0, (lift / 1.5)**0.8)
-        cd = (target_cd * ramp)
+        peak_cd = 0.63
+        optimal_ld = 0.22 
+        # Lowering exhaust floor from 0.45 to 0.20 reduces low-RPM over-scavenging
+        base_cd = 0.20 
+        if ld <= optimal_ld:
+            cd = base_cd + (peak_cd - base_cd) * np.sin((ld / optimal_ld) * (np.pi / 2))
+        else:
+            cd = peak_cd * np.exp(-1.2 * (ld - optimal_ld))
+            
+    return cd # No hard floor needed if base_cd is correct
+
+# def _calc_wbx_valve_cd(lift, diameter, is_intake, rpm):
+#     # 1. Base Cd from Lift/Diameter ratio (Existing Logic)
+#     # L/D = lift / diameter
+#     # base_cd = ... (your existing lookup or formula)
+#     base_cd = 0.65 # Placeholder for your actual base logic
+
+#     # 2. Mean Piston Speed (MPS) scaling for WBX (76mm stroke)
+#     # MPS = (2 * Stroke * RPM) / 60
+#     mps = (2 * 0.076 * rpm) / 60.0
+    
+#     # 3. Velocity Factor: 
+#     # Starts at 0.70 (lazy) at low RPM and reaches 1.0 (full efficiency) 
+#     # when MPS hits ~7.1 m/s (approx 2800 RPM).
+#     velocity_factor = np.clip(0.60 + (0.40 * (mps / 8.5)), 0.60, 1.0)
+    
+#     return base_cd * velocity_factor
+
+# def _calc_wbx_valve_cd(lift, diameter, is_intake, rpm):
+#     base_cd = 0.62 # Lowered base efficiency
+#     mps = (2 * 0.076 * rpm) / 60.0
+#     # Sharpen the penalty to hollow out 1000-2000 RPM
+#     velocity_factor = np.clip(0.45 + (0.55 * (mps / 8.5)), 0.45, 1.0)
+#     return base_cd * velocity_factor
+
+# def _calc_wbx_valve_cd(lift, diameter, is_intake, rpm):
+#     if lift <= 1e-6: return 0.0
+#     ld = lift / diameter
+    
+#     # 1. Geometry (Physical restriction of the valve head)
+#     # Peak Cd for a 2.1L WBX is roughly 0.65-0.68 for Intake
+#     peak_cd = 0.65 if is_intake else 0.63
+    
+#     # Sine-curve for the 'Curtain Area' efficiency
+#     # Efficiency peaks at ld=0.25 (Standard for poppet valves)
+#     if ld <= 0.25:
+#         # Starts at 0.15 to prevent 'instant gulping' at low lift
+#         cd = 0.15 + (peak_cd - 0.15) * np.sin((ld / 0.25) * (np.pi / 2))
+#     else:
+#         # Shrouding: Slight drop as the valve moves too far into the chamber
+#         cd = peak_cd * np.exp(-0.6 * (ld - 0.25))
         
-    return min(cd, cap)
+#     # 2. Dynamic Velocity Penalty (The 'Wall' at high RPM)
+#     # Mean Piston Speed (MPS) proxy
+#     mps = (2 * 0.076 * rpm) / 60.0
+#     # At 4500 RPM (mps=11.4), factor is ~0.94. At 6000, it's ~0.89.
+#     velocity_penalty = np.clip(1.0 - (mps / 45.0)**2, 0.8, 1.0)
+    
+#     return cd * velocity_penalty
+
 
 # --- Combustion and Heat Functions ---
 
@@ -768,8 +954,9 @@ def is_combustion_phase(theta, t_spark, t_burn):
 #     V_curr = max(V_curr, 1e-9)
     
 #     # 2. Rates
-#     dM_d_theta = Delta_M / theta_delta
-#     dQ_net_rate = (Delta_Q_in / theta_delta) - Delta_Q_loss 
+#     dM_d_theta = Delta_M #/ theta_delta
+#     # dQ_net_rate = (Delta_Q_in / theta_delta) - Delta_Q_loss 
+#     dQ_net_rate = Delta_Q_in - Delta_Q_loss 
 
 #     # 3. PREDICTOR STEP
 #     T_flow_pred = T_manifold if Delta_M >= 0 else T_curr
@@ -802,134 +989,391 @@ def is_combustion_phase(theta, t_spark, t_burn):
 #     T_next = (P_next * V_next) / (M_next * R_spec)
     
 #     return P_next, T_next
-def integrate_first_law(
-    P_curr, T_curr, M_curr, V_curr, Delta_M, Delta_Q_in, Delta_Q_loss, 
-    dV_d_theta, theta_delta, T_manifold, R_spec_blended, gamma_blended_start,
-    cycle=None, CAD=None, substep=None
-):
-    # 1. PREDICTOR STEP
-    # Uses the blended gamma (composition + start temp)
-    dM_d_theta = Delta_M / theta_delta
-    dQ_net_rate = (Delta_Q_in / theta_delta) - Delta_Q_loss 
-    T_flow_pred = T_manifold if Delta_M >= 0 else T_curr
-    
-    term_heat = (gamma_blended_start - 1.0) * dQ_net_rate
-    term_work = -gamma_blended_start * P_curr * dV_d_theta
-    term_mass = gamma_blended_start * R_spec_blended * T_flow_pred * dM_d_theta
-    
-    dP_d_theta_pred = (term_heat + term_work + term_mass) / V_curr
-    
-    # Midpoint state prediction
-    P_mid = P_curr + dP_d_theta_pred * (0.5 * theta_delta)
-    V_mid = V_curr + dV_d_theta * (0.5 * theta_delta)
-    M_mid = M_curr + (0.5 * Delta_M)
-    T_mid = (P_mid * V_mid) / (M_mid * R_spec_blended)
 
-    # 2. THERMAL CORRECTION (The "Mid Value")
-    # R_spec stays the same (composition doesn't change mid-step)
-    # Gamma is updated because T has changed significantly
-    gamma_mid = get_gamma(T_mid, R_spec_blended)
+# def integrate_first_law_old(
+#     P_curr, T_curr, M_curr, V_curr, Delta_M, Delta_Q_in, Delta_Q_loss, 
+#     dV_d_theta, theta_delta, T_manifold, R_spec_blended, gamma_blended_start,
+#     cycle=None, CAD=None, substep=None
+# ):
+    
 
-    # 3. CORRECTOR STEP
-    T_flow_corr = T_manifold if Delta_M >= 0 else T_mid
-    term_work_mid = -gamma_mid * P_mid * dV_d_theta
-    term_mass_mid = gamma_mid * R_spec_blended * T_flow_corr * dM_d_theta
     
-    dP_d_theta_final = (term_heat + term_work_mid + term_mass_mid) / V_mid
+#     # 1. PREDICTOR STEP
+#     # Uses the blended gamma (composition + start temp)
+#     dM_d_theta = Delta_M #/ theta_delta
+#     dQ_net_rate = Delta_Q_in - Delta_Q_loss 
+#     T_flow_pred = T_manifold if Delta_M >= 0 else T_curr
     
-    # 4. FINAL STATE
-    P_next = P_curr + dP_d_theta_final * theta_delta
-    M_next = M_curr + Delta_M
-    V_next = V_curr + dV_d_theta * theta_delta
-    T_next = (P_next * V_next) / (M_next * R_spec_blended)
+#     term_heat = (gamma_blended_start - 1.0) * dQ_net_rate
+#     term_work = -gamma_blended_start * P_curr * dV_d_theta
+#     term_mass = gamma_blended_start * R_spec_blended * T_flow_pred * dM_d_theta
+    
+#     dP_d_theta_pred = (term_heat + term_work + term_mass) / V_curr
+    
+#     # Midpoint state prediction
+#     P_mid = P_curr + dP_d_theta_pred * (0.5 * theta_delta)
+#     V_mid = V_curr + dV_d_theta * (0.5 * theta_delta)
+#     M_mid = M_curr + (0.5 * Delta_M)
+#     T_mid = (P_mid * V_mid) / (M_mid * R_spec_blended)
+
+#     # 2. THERMAL CORRECTION (The "Mid Value")
+#     # R_spec stays the same (composition doesn't change mid-step)
+#     # Gamma is updated because T has changed significantly
+#     gamma_mid = get_gamma(T_mid, R_spec_blended)
+
+#     # 3. CORRECTOR STEP
+#     T_flow_corr = T_manifold if Delta_M >= 0 else T_mid
+#     term_work_mid = -gamma_mid * P_mid * dV_d_theta
+#     term_mass_mid = gamma_mid * R_spec_blended * T_flow_corr * dM_d_theta
+    
+#     dP_d_theta_final = (term_heat + term_work_mid + term_mass_mid) / V_mid
+    
+#     # 4. FINAL STATE
+#     P_next = P_curr + dP_d_theta_final * theta_delta
+#     M_next = M_curr + Delta_M
+#     V_next = V_curr + dV_d_theta * theta_delta
+#     T_next = (P_next * V_next) / (M_next * R_spec_blended)
+    
+#     return P_next, T_next
+
+# def integrate_first_law(CAD, P_curr, T_curr, M_curr, V_curr, 
+#                         Delta_Q_in,    # Joules (absolute)
+#                         Delta_Q_loss,  # Joules (absolute)
+#                         dV,            # m3 (absolute)
+#                         Delta_M,       # kg (absolute)
+#                         R_spec, T_manifold):
+    
+#     cv = calc_specific_heat_cv(T_curr)
+
+#     # 1. Total Net Heat for this substep
+#     dQ_substep = Delta_Q_in - Delta_Q_loss
+
+#     # 2. Work done (P * dV)
+#     dW_substep = P_curr * dV
+
+#     # 3. Mass energy exchange (Enthalpy)
+#     # If mass is entering, it brings energy; if leaving, it takes it.
+#     gamma = (cv + R_spec) / cv
+#     h_flow = T_manifold * (cv + R_spec) if Delta_M > 0 else T_curr * (cv + R_spec)
+#     dEnthalpy = Delta_M * h_flow
+
+#     # 4. First Law: Change in Internal Energy (dU)
+#     dU = dQ_substep - dW_substep + dEnthalpy
+   
+#         # 1. Calculate current internal energy
+#     U_curr = M_curr * cv * T_curr
+
+#     # 2. Add the change (Net energy from Work, Heat, and Enthalpy flow)
+#     U_next = U_curr + dU
+
+#     # 3. Update Mass and Volume
+#     M_next = M_curr + Delta_M
+#     V_next = V_curr + dV
+
+#     # 4. Calculate T_next based on NEW mass
+#     # Note: ideally cv should be updated for T_next, but T_curr is an okay approximation
+#     T_next = U_next / (M_next * cv)
+
+#     # 5. Then calculate Pressure
+#     P_next = (M_next * R_spec * T_next) / V_next
+
+#     return P_next, T_next
+
+def integrate_first_law(CAD, P_curr, T_curr, M_curr, V_curr, 
+                        Delta_Q_in, Delta_Q_loss, dV, Delta_M, 
+                        R_spec, T_manifold, lambda_):
+    # 1. Get dynamic properties
+    cv = calc_specific_heat_cv(T_curr, lambda_)
+    cp = cv + R_spec
+    
+    # 2. Net Energy for this substep (Joules)
+    dQ_net = Delta_Q_in - Delta_Q_loss
+    dW = P_curr * dV
+    
+    # 3. Mass energy exchange
+    # If Delta_M is positive, mass enters with T_manifold enthalpy
+    # If negative, mass leaves with T_curr enthalpy
+    h_flow = cp * (T_manifold if Delta_M > 0 else T_curr)
+    
+    # 4. THE TEMPERATURE SOLVER (Differential Form)
+    # This replaces the U_next / (M * Cv) logic which is prone to error
+    # Equation: m*cv*dT = dQ - P*dV + h*dm - u*dm
+    u_curr = cv * T_curr
+    m_next = M_curr + Delta_M
+    
+    # solving for dT
+    dT = (dQ_net - dW + (h_flow * Delta_M) - (u_curr * Delta_M)) / (m_next * cv)
+    
+    T_next = T_curr + dT
+    P_next = (m_next * R_spec * T_next) / (V_curr + dV)
     
     return P_next, T_next
 
-def get_gamma(T, R_spec):
-    """Calculates dynamic gamma (Cp/Cv)."""
-    cv = calc_specific_heat_cv(T)
-    cp = cv + R_spec
-    return cp / cv
+
+# def get_gamma(T, R_spec):
+#     """Calculates dynamic gamma (Cp/Cv)."""
+#     cv = calc_specific_heat_cv(T)
+#     cp = cv + R_spec
+    
+#     return cp / cv
+
+def calc_specific_heat_cv(T, lambda_):
+    T_clamped = max(300, min(T, 3500))
+    # Revised coefficients to hit ~1350 J/kgK at 3000K
+    cv = 715 + (0.22 * T_clamped) 
+    
+    # Keep your rich-mixture logic—it's excellent physics.
+    if lambda_ < 1.0:
+        f_extra = (1.0 - lambda_) * 0.068 
+        cv = (cv * (1 - f_extra)) + (2500 * f_extra)
+    return cv
+
+# def calc_specific_heat_cv(T, lambda_):
+#     T_clamped = max(300, min(T, 3500))
+    
+#     # Tuned for WBX Combustion Products (Lambda 0.85 - 1.0)
+#     # Starts at ~720 at 300K, hits ~1100 at 2500K
+#     cv = 680 + (0.25 * T_clamped) - (0.00003 * T_clamped**2)
+    
+#     # If rich, the unburned fuel acts as a heat sink
+#     if lambda_ < 1.0:
+#         f_extra = (1.0 - lambda_) * 0.068 # mass fraction of excess fuel
+#         # Fuel vapor has much higher Cv (~2500) than exhaust (~1100)
+#         cv = (cv * (1 - f_extra)) + (2500 * f_extra)
+    
+#     return cv
+
+# def calc_specific_heat_cv(T):
+#     """
+#     Polynomial approximation of Cv based on JANAF tables.
+#     Provides realistic pressure response by accurately modeling 
+#     vibrational energy at high temperatures.
+#     """
+#     T = max(300, min(T, 3500))
+    
+#     # Quadratic fit: starts at ~718 J/kgK at 300K 
+#     # and curves realistically toward ~980 J/kgK at 2500K.
+#     cv = 660 + (0.16 * T) - (0.000025 * T**2)
+#     return cv
 
 
 # --- Engine Performance Functions ---
 
 
-def calc_pumping_losses(P_cyl, V_list, theta_list):
-    """This function is a placeholder; PMEP is implicitly calculated in W_indicated."""
-    pass
+def calc_pumping_losses_nm(current_map):
+    """ calculated the toruqe pumping losses """
+    # Pumping Torque Calculation (Nm)
+    # Formula: (Delta_Pressure * Displacement) / (4 * pi)
+    # For a 2.1L (0.0021 m^3) 4-stroke engine:
+
+    p_delta = c.P_ATM_PA - current_map  # Pressure difference in Pascals
+    V_d = c.V_DISPLACED * c.NUM_CYL # Displacement in m^3
+
+    # This is the 'Brake' applied by the vacuum
+    pumping_torque_nm = (p_delta * V_d) / (4 * np.pi)
+
+    return pumping_torque_nm
 
 # def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
-#     """
-#     Calculations the friction associated with a single cylinder.  it excludes the firction of the oil pump, valve train etc
-#     that is common across all cylinders.
-#     """
-#      # 1. Kinematics
 #     geom_factor = calc_piston_speed_factor(theta)
 #     omega = (rpm * 2 * np.pi) / 60.0
 #     v_piston_inst = abs(omega * geom_factor)
     
-#     # 2. Viscosity
 #     visc_factor = max(1.0, 1.0 + 2.0 * np.exp(-0.05 * (clt - 40)))
 
-#     # 3. Dynamic Coefficients 
-#     # Increasing f_linear slightly to raise the 3000rpm baseline
-#     f_linear = 1.65 * v_piston_inst # was 2.0
-    
-#     # Increasing f_quadratic to ensure we hit the "doubling" target at 4500rpm
-#     f_quadratic = 0.015 * (v_piston_inst**2) # was 0.02
-    
-#     # f_pressure remains a minor player during motoring but major during firing
-#     f_pressure = 0.0001 * max(0, p_cyl) # was 0.00001
+#     # Toned down for WBX 2.1L 
+#     f_linear = 1.4 * v_piston_inst 
+#     f_quadratic = 0.007 * (v_piston_inst**2)  # Reduced to allow 4800rpm peak
+#     f_pressure = 0.000025 * max(0, p_cyl)    # Reduced to fix 63% efficiency fail
     
 #     total_f_friction = (f_linear + f_quadratic + f_pressure)
     
-#     # 4. Correct Conversion to Torque
+#     # Correct Conversion to Torque
 #     t_friction = total_f_friction * c.RADIUS_CRANK * abs(np.sin(np.deg2rad(theta)))
     
-#     # Apply viscosity mostly to the speed-based shearing
 #     return t_friction * visc_factor
 
-def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
-    geom_factor = calc_piston_speed_factor(theta)
-    omega = (rpm * 2 * np.pi) / 60.0
-    v_piston_inst = abs(omega * geom_factor)
-    
-    visc_factor = max(1.0, 1.0 + 2.0 * np.exp(-0.05 * (clt - 40)))
-
-    # Toned down for WBX 2.1L 
-    f_linear = 1.4 * v_piston_inst 
-    f_quadratic = 0.007 * (v_piston_inst**2)  # Reduced to allow 4800rpm peak
-    f_pressure = 0.000025 * max(0, p_cyl)    # Reduced to fix 63% efficiency fail
-    
-    total_f_friction = (f_linear + f_quadratic + f_pressure)
-    
-    # Correct Conversion to Torque
-    t_friction = total_f_friction * c.RADIUS_CRANK * abs(np.sin(np.deg2rad(theta)))
-    
-    return t_friction * visc_factor
-
-
-def calc_engine_core_friction(clt, rpm):
-    visc_factor = max(1.0, 1.0 + 2.0 * np.exp(-0.05 * (clt - 40)))
-    
-    # OLD: base_nm = 2.1 + (rpm/6000)
-    # NEW: Increasing static load to 5.5 Nm to soak up ~3.5 Nm of the excess torque
-    base_nm = 1.8 + (rpm/3000) 
-    
-    return base_nm * visc_factor
 
 # def calc_engine_core_friction(clt, rpm):
-#     """
-#     Calculated the Global parasitics: Oil pump, crank seals, and cam/valvetrain drag.
-#     """
 #     visc_factor = max(1.0, 1.0 + 2.0 * np.exp(-0.05 * (clt - 40)))
     
-#     # Base parasitic now scales slightly with RPM
-#     # (e.g., 2Nm at 1000rpm, 4Nm at 3000rpm)
-#     base_nm = 2.1 + (rpm/6000) # was 1.3 + rpm/3000
+#     # OLD: base_nm = 2.1 + (rpm/6000)
+#     # NEW: Increasing static load to 5.5 Nm to soak up ~3.5 Nm of the excess torque
+#     base_nm = 1.8 + (rpm/3000) 
     
 #     return base_nm * visc_factor
+
+# def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
+#     # 1. Ring Tension (The Floor)
+#     # This is constant. 0.8 to 1.0 Nm is realistic for a 94mm bore.
+#     t_ring_tension = 0.8 # was 0.9
+    
+#     # 2. Viscous Drag (Oil Film)
+#     # Reduce the sensitivity. Use a smaller exponent or a "clamped" scalar.
+#     visc_scalar = max(1.0, (100.0 / (clt + 10.0))**0.5) 
+#     t_viscous = (rpm / 3000.0) * 0.3 * visc_scalar
+    
+#     # 3. Pressure Loading (Rings pushed against wall by gas)
+#     t_gas_load = abs(p_cyl - c.P_ATM_PA) * 2e-7 # 1.5e-7 to 3.0e-7
+    
+#     return t_ring_tension + t_viscous + t_gas_load
+
+# def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
+#     t_ring_tension = 0.8
+    
+#     visc_scalar = max(1.0, (100.0 / (clt + 10.0))**0.5) 
+#     t_viscous = (rpm / 3000.0) * 0.3 * visc_scalar
+    
+#     # INCREASE THIS: Move from 2e-7 to 3.5e-6
+#     # This represents the combined drag of all rings + piston side-loading
+#     t_gas_load = abs(p_cyl - c.P_ATM_PA) * 8.5e-6 
+    
+#     return t_ring_tension + t_viscous + t_gas_load
+
+# def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
+#     # 1. CONSTANT: Boundary friction (Rings vs Walls)
+#     t_ring_tension = 0.5 # 0.8
+    
+#     # 2. VISCOUS SCALAR: Oil thinning with temp
+#     visc_scalar = max(1.0, (100.0 / (clt + 10.0))**0.5) 
+    
+#     # 3. LINEAR TERM: Oil Film Shearing (Hydrodynamic)
+#     # Scales with RPM
+#     # t_hydro = (rpm / 3000.0) * 0.4 * visc_scalar
+#     t_hydro = (rpm / 3000.0) * 0.3 * visc_scalar
+    
+#     # 4. QUADRATIC TERM: Windage and Turbulence (Pumping/Churning)
+#     # Scales with RPM^2. This is the 'Sound Physics' key for high RPM growth.
+#     # t_windage = (rpm / 3000.0)**2 * 0.25
+#     t_windage = (rpm / 3000.0)**2 * 0.4
+    
+#     # 5. GAS LOAD: Piston Side-Loading
+#     t_gas_load = abs(p_cyl - c.P_ATM_PA) * 8.5e-6 
+    
+#     return t_ring_tension + t_hydro + t_windage + t_gas_load
+
+# def calc_engine_core_friction(rpm, clt):
+#     t_static = 0.9 #1.3 
+    
+#     # Hydrodynamic drag (Bearings)
+#     visc_scalar = (100.0 / (clt + 10.0))**0.8 
+#     # t_hydro = (rpm / 3000.0) * 1.0 * visc_scalar
+#     t_hydro = (rpm / 3000.0) * 0.8 * visc_scalar
+    
+#     # Windage & Oil Pump (Parasitic) - Quadratic
+#     # Even in a core test, the oil pump work increases with the square of speed.
+#     t_parasitic = (rpm / 3000.0)**2 * 0.35 # 0.4 
+    
+#     return t_static + t_hydro + t_parasitic
+
+# def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
+#     # 1. CONSTANT
+#     t_ring_tension = 0.68 # 0.51  # Shaved from 0.52
+    
+#     # 2. VISCOUS SCALAR
+#     # Lowering exponent to 1.15 to guarantee cyl_ratio < 2.0
+#     visc_scalar = max(1.0, (90.0 / (clt + 5.0))**1.15) 
+    
+#     # 3. LINEAR TERM
+#     t_hydro = (rpm / 3000.0) * 0.35 * visc_scalar 
+    
+#     # 4. QUADRATIC TERM (The 'Ceiling' Killer)
+#     # Shaving this term slightly to get under the 7.0Nm total
+#     t_windage = (rpm / 3000.0)**2 * 0.33 # Shaved from 0.35
+    
+#     # 5. GAS LOAD
+#     t_gas_load = abs(p_cyl - c.P_ATM_PA) * 1.0e-5 
+    
+#     return t_ring_tension + t_hydro + t_windage + t_gas_load
+
+def calc_single_cylinder_friction(theta, rpm, p_cyl, clt):
+    # Increase ring tension to contribute to the 40Nm drop
+    t_ring_tension = 1.1 
+    
+    # Quadratic scaling for piston speed (MPS^2 proxy)
+    t_viscous = ((rpm / 4000.0)**2) * 1.0
+    
+    # Keep Gas Load as a polynomial 'B' term
+    t_gas_load = abs(p_cyl - c.P_ATM_PA) * 0.8e-5 
+    
+    return t_ring_tension + t_viscous + t_gas_load
+
+def calc_engine_core_friction(rpm, clt):
+    # 1. Increase Static Floor to 5.5 to drop base torque by ~30-40Nm
+    t_static = 2.5 #5.5 
+    
+    visc_scalar = (70.0 / (clt + 5.0))**1.2 
+    
+    # 2. Hydrodynamic: Use a 0.8 exponent. 
+    # This provides a steady but non-explosive growth in the mid-range.
+    # t_hydro = ((rpm / 3000.0)**0.8) * 2.5 * visc_scalar 
+    t_hydro = ((rpm / 3200.0)**0.7) * 2.0 * visc_scalar 
+    
+    # 3. Parasitic (Quadratic): Increase this to 'kill' the torque after 3000 RPM.
+    # Increasing from 0.5 to 1.8 creates the aggressive high-end ramp you requested.
+    t_parasitic = (rpm / 5500.0)**2 * 1.8
+    # t_parasitic = ((rpm / 4500.0)**2) * 2.5
+    
+    return t_static + t_hydro + t_parasitic
+
+# def calc_engine_core_friction(rpm, clt):
+#     # 1. Increase Static Floor to 5.5 to drop base torque by ~30-40Nm
+#     t_static = 2.5 #5.5 
+    
+#     visc_scalar = (70.0 / (clt + 5.0))**1.2 
+    
+#     # 2. Hydrodynamic: Use a 0.8 exponent. 
+#     # This provides a steady but non-explosive growth in the mid-range.
+#     # t_hydro = ((rpm / 3000.0)**0.8) * 2.5 * visc_scalar 
+#     t_hydro = ((rpm / 3000.0)**0.8) * 2.5 * visc_scalar 
+    
+#     # 3. Parasitic (Quadratic): Increase this to 'kill' the torque after 3000 RPM.
+#     # Increasing from 0.5 to 1.8 creates the aggressive high-end ramp you requested.
+#     # t_parasitic = (rpm / 3000.0)**2 * 1.8
+#     t_parasitic = ((rpm / 3000.0)**2) * 2.5
+    
+#     return t_static + t_hydro + t_parasitic
+
+
+# def calc_engine_core_friction(rpm, clt):
+#     # 1. Static/Boundary Friction (Seals and initial shear)
+#     # Increase from 1.35 to 2.8. This anchors your FMEP floor.
+#     t_static = 3.10 #2.80 
+    
+#     # 2. Hydrodynamic Friction (Bearings and Oil Film)
+#     # 90.0 / (clt + 5.0) is a good thermal curve.
+#     # Increase the multiplier from 0.8 to 2.2.
+#     visc_scalar = (90.0 / (clt + 5.0))**1.4 
+#     # t_hydro = (rpm / 3000.0) * 2.2 * visc_scalar 
+#     t_hydro = ((rpm / 3000.0)**0.7) * 2.8 * visc_scalar
+    
+#     # 3. Parasitic Friction (Oil pump, Water pump, Windage)
+#     # Increase from 0.4 to 1.2. The WBX oil pump is a massive gear-driven unit.
+#     # t_parasitic = (rpm / 3000.0)**2 * 1.20 
+#     t_parasitic = (rpm / 3000.0)**2 * 0.4
+    
+#     return t_static + t_hydro + t_parasitic
+
+# def calc_engine_core_friction(rpm, clt):
+#     t_static = 1.35 # 1.0 
+    
+#     # Keep core sensitivity slightly higher (1.4) as bearings are very temp dependent
+#     visc_scalar = (90.0 / (clt + 5.0))**1.4 
+#     t_hydro = (rpm / 3000.0) * 0.8 * visc_scalar 
+#     t_parasitic = (rpm / 3000.0)**2 * 0.40 
+    
+#     return t_static + t_hydro + t_parasitic
+
+# def calc_engine_core_friction(rpm, clt):
+#     # Base drag for valvetrain/seals (Constant)
+#     t_static = 1.3 # was 1.5 
+    
+#     # Hydrodynamic drag for bearings (Temp Sensitive)
+#     # This is where the 3.0x ratio should live.
+#     visc_scalar = (100.0 / (clt + 10.0))**0.8 
+#     t_hydro = (rpm / 3000.0) * 1.0 * visc_scalar
+    
+#     return t_static + t_hydro
 
 def calc_coolant_temperature_increment(
     brake_torque_nm: float,
@@ -977,55 +1421,6 @@ def update_coolant_temp(current_clt, brake_torque_nm, rpm):
     cooling = calc_thermostat_cooling_rate(current_clt)
     return np.clip(current_clt + dT - cooling, -10, 115)
 
-# def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
-#     """
-#     Refined knock detection for higher-fidelity Wiebe physics.
-#     Now accounts for RPM and Fuel Octane.
-#     """
-#     # 1. Base threshold scaled for realistic Wiebe Pmax
-#     # A safe Pmax for a 10:1 CR N/A engine is around 100 bar.
-#     base_threshold = 95.0 
-    
-#     # 2. Octane Correction (Every point of Octane is worth ~2 bar of tolerance)
-#     # Baseline is 95 RON. 
-#     octane_offset = (fuel_octane - 95.0) * 2.5
-    
-#     # 3. RPM Sensitivity (High RPM reduces time for knock to occur)
-#     # Every 1000 RPM adds ~3 bar of pressure tolerance
-#     rpm_safety = (rpm / 1000.0) * 2.0
-
-#     # 4. Thermal & Chemistry Factors (Preserving your logic with better scaling)
-#     # CLT protection
-#     cold_protection = np.clip((90.0 - clt) * 0.5, 0, 15.0)
-    
-#     # Rich mixture cooling (Lambda < 1.0)
-#     rich_safety = np.clip((1.0 - lambda_) * 30.0, 0, 10.0)
-    
-#     # Spark Penalty (If you push way past typical MBT limits)
-#     advance_penalty = max(0.0, (spark_advance - 30.0) * 2.0)
-
-#     # 5. Calculate Final Threshold
-#     knock_threshold_bar = (
-#         base_threshold 
-#         + octane_offset 
-#         + rpm_safety 
-#         + cold_protection 
-#         + rich_safety 
-#         - advance_penalty
-#     )
-
-#     # 6. Result Calculation
-#     pressure_ratio = peak_bar / knock_threshold_bar
-
-#     if pressure_ratio > 1.0:
-#         knock_detected = True
-#         # Intensity scales exponentially (1.1 ratio = slight knock, 1.3 = engine damage)
-#         knock_intensity = (pressure_ratio - 1.0) * 20.0 
-#     else:
-#         knock_detected = False
-#         knock_intensity = 0.0
-        
-#     return knock_detected, knock_intensity
 
 def detect_knock(peak_bar, clt, rpm, spark_advance, lambda_, fuel_octane=95.0):
     # 1. Base threshold must be higher to satisfy the 100.0 bar test input.
@@ -1073,38 +1468,38 @@ def calc_indicated_torque_step(delta_work_J):
 
     return torque_raw
 
-def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):
-    """
-    Calculates the instantaneous heat release (Joules/degree) using the Wiebe function.
-    """
-    # a=5.0 and m=2.0 are standard for spark-ignition engines
-    a = 5.0
-    m = 2.0
+# def calc_wiebe_heat_rate(theta, theta_start, duration, total_heat_J):
+#     """
+#     Calculates the instantaneous heat release (Joules/degree) using the Wiebe function.
+#     """
+#     # a=5.0 and m=2.0 are standard for spark-ignition engines
+#     a = 5.0
+#     m = 2.0
     
-    # Normalized progress through the burn (0.0 to 1.0)
-    delta_theta = theta - theta_start
+#     # Normalized progress through the burn (0.0 to 1.0)
+#     delta_theta = theta - theta_start
     
-    if delta_theta < 0 or delta_theta > duration:
-        # # Add this inside the active burn window logic
-        # if total_heat_J > 0:
-        #     print(f"DEBUG_BURN | θ:{theta:05.1f} | "
-        #         f"Burn_Progress:{y:4.2f} | "
-        #         f"dQ_this_deg:{delta_theta * c.THETA_DELTA:6.2f}J | "
-        #         f"Total_Expected:{total_heat_J:6.2f}J")
-        return 0.0
+#     if delta_theta < 0 or delta_theta > duration:
+#         # # Add this inside the active burn window logic
+#         # if total_heat_J > 0:
+#         #     print(f"DEBUG_BURN | θ:{theta:05.1f} | "
+#         #         f"Burn_Progress:{y:4.2f} | "
+#         #         f"dQ_this_deg:{delta_theta * c.THETA_DELTA:6.2f}J | "
+#         #         f"Total_Expected:{total_heat_J:6.2f}J")
+#         return 0.0
     
-    # Normalized position
-    y = delta_theta / duration
+#     # Normalized position
+#     y = delta_theta / duration
     
-    # Wiebe Mass Fraction Burned (MFB) derivative: dXb/dtheta
-    # This gives us the fraction of total heat released during THIS degree
-    term1 = a * (m + 1) / duration
-    term2 = y**m
-    term3 = np.exp(-a * y**(m + 1))
+#     # Wiebe Mass Fraction Burned (MFB) derivative: dXb/dtheta
+#     # This gives us the fraction of total heat released during THIS degree
+#     term1 = a * (m + 1) / duration
+#     term2 = y**m
+#     term3 = np.exp(-a * y**(m + 1))
     
-    dxb_dtheta = term1 * term2 * term3
+#     dxb_dtheta = term1 * term2 * term3
     
-    return dxb_dtheta * total_heat_J
+#     return dxb_dtheta * total_heat_J
 
 def update_cylinder_wall_temperature(current_clt_C, cycle_Q_loss_joules, rpm, previous_T_wall):
     if rpm < 100:
@@ -1121,180 +1516,327 @@ def update_cylinder_wall_temperature(current_clt_C, cycle_Q_loss_joules, rpm, pr
     
     # Increase alpha to 0.1 for faster surface response in transient tests
     alpha = 0.1 
-    new_T_wall = (alpha * target_T_wall) + ((1 - alpha) * previous_T_wall)
+    T_wall_raw = (alpha * target_T_wall) + ((1 - alpha) * previous_T_wall)
     
-    return np.clip(new_T_wall, current_clt_C + 273.15, 600.0)
-
-# def update_cylinder_wall_temperature(
-#     current_clt_C, 
-#     cycle_Q_loss_joules, 
-#     rpm,
-#     previous_T_wall
-# ):
-#     """
-#     Determines T_wall with thermal inertia to prevent unrealistic spikes.
-#     """
-#     if rpm < 100:
-#         return current_clt_C + 273.15
-
-#     cycle_time_sec = 120.0 / rpm
-#     heat_flux_watts = cycle_Q_loss_joules / cycle_time_sec
+    new_t_wall = np.clip(T_wall_raw, current_clt_C + 273.15, 600.0)
     
-#     # R_wall should be tuned. 0.002 is a better starting point for Watts.
-#     R_wall = 0.002 
-    
-#     # The 'steady state' wall temp for this specific power level
-#     target_T_wall = (current_clt_C + 273.15) + (heat_flux_watts * R_wall)
-    
-#     # Thermal Inertia: Alpha represents how much the wall can change per cycle.
-#     # 0.01 means it takes ~100 cycles to reach 63% of a temp change.
-#     alpha = 0.05 
-#     new_T_wall = (alpha * target_T_wall) + ((1 - alpha) * previous_T_wall)
-    
-#     # Safety clamp: Wall can't be cooler than coolant or hotter than melting point
-#     return np.clip(new_T_wall, current_clt_C + 273.15, 600.0)
+    return new_t_wall
 
-# def get_burn_duration(rpm, lambda_):
-#     """
-#     Optimized for VW WBX 2.1 (94mm Bore).
-#     Adjusted to ensure high-RPM pressure peaks correctly without unphysical spark.
-#     """
-#     # 40 degrees at 3000 RPM is a solid baseline for a 94mm bore.
-#     BASE_DURATION = 45.0 # was 40
-#     REF_RPM = 3000.0
-
-#     # 1. RPM Factor:
-#     # We use a -0.2 exponent. This is a 'flatter' curve that 
-#     # provides more stability between 2000 and 5000 RPM.
-#     # 1500 RPM: (0.5)^-0.2 = 1.15 -> 46 deg
-#     # 4500 RPM: (1.5)^-0.2 = 0.92 -> 36.8 deg
-#     f_rpm = (max(rpm, 200) / REF_RPM)**-0.2
-
-#     # 2. Lambda Factor:
-#     # Keep your current quadratic; it's physically sound for the WBX.
-#     f_lambda = 1.0 + 2.2 * (lambda_ - 0.9)**2.0
-
-#     # 3. Dynamic Clipping
-#     # A 94mm bore rarely finishes a burn in under 30 degrees 
-#     # unless it's knocking (explosive).
-#     return np.clip(BASE_DURATION * f_rpm * f_lambda, 34.0, 85.0) # was 30 and 80
 
 def get_burn_duration(rpm, lambda_):
-    # 1. Increase Base: 55 degrees is the 'sweet spot' for a 94mm bore 
-    # to keep Peak P under 65 bar at 3000-4500 RPM.
-    BASE_DURATION = 55.0 
+    BASE_DURATION = 42.0  # Dropped from 55.0 to 42.0
     REF_RPM = 3000.0
 
-    # 2. RPM Factor:
-    # Turbulence helps, but a 94mm flame path is long.
-    f_rpm = (max(rpm, 200) / REF_RPM)**-0.2
+    # Softer exponent (-0.08) prevents the 'Idle Stretch'
+    f_rpm = (max(rpm, 200) / REF_RPM)**-0.08 
 
-    # 3. Lambda Factor: Physically sound.
+    # Keep your existing Lambda scaling
     f_lambda = 1.0 + 2.2 * (lambda_ - 0.9)**2.0
 
-    # 4. Dynamic Clipping:
-    # We raise the floor to 42.0. This ensures that even at 5000 RPM, 
-    # the burn doesn't 'accelerate' into an engine-breaking pressure spike.
-    return np.clip(BASE_DURATION * f_rpm * f_lambda, 42.0, 90.0)
+    # Clip to ensure high-rpm safety
+    return np.clip(BASE_DURATION * f_rpm * f_lambda, 35.0, 80.0)
+
 
 # def get_burn_duration(rpm, lambda_):
-#     """
-#     Refined for VW WBX 2.1 (94mm Bore).
-#     Models the relationship between turbulence (RPM) and flame speed.
-#     """
-#     # Base duration in degrees for a 94mm bore at 3000 RPM
-#     # WBX heads are not high-swirl; 45-50 degrees is a realistic MBT duration.
-#     BASE_DURATION = 42.0 # was 48
+#     # 1. Increase Base: 55 degrees is the 'sweet spot' for a 94mm bore 
+#     # to keep Peak P under 65 bar at 3000-4500 RPM.
+#     BASE_DURATION = 55.0 
 #     REF_RPM = 3000.0
 
-#     # 1. RPM Factor (Turbulence):
-#     # As RPM increases, turbulence increases, keeping the burn duration 
-#     # (in degrees) relatively stable, but it still widens slightly at high RPM.
-#     # At 1000 RPM: factor is (1000/3000)**-0.35 ≈ 1.47 (Slower burn)
-#     # At 6000 RPM: factor is (6000/3000)**-0.35 ≈ 0.78 (Faster burn)
-#     f_rpm = (max(rpm, 200) / REF_RPM)**-0.35
+#     # 2. RPM Factor:
+#     # Turbulence helps, but a 94mm flame path is long.
+#     # f_rpm = (max(rpm, 200) / REF_RPM)**-0.2
+#     f_rpm = (max(rpm, 200) / REF_RPM)**-0.15 # Softer scaling for idle
 
-#     # 2. Lambda Factor: 
-#     # Gasoline flame speed peaks around Lambda 0.9 and drops sharply when lean.
-#     # This quadratic penalty simulates the 'lean-stumble' of the Digifant system.
+#     # 3. Lambda Factor: Physically sound.
 #     f_lambda = 1.0 + 2.2 * (lambda_ - 0.9)**2.0
 
-#     # 3. Dynamic Clipping
-#     # Ensure we stay within physical limits (20 deg for instant bang, 100 deg for fire in exhaust)
-#     burn_duration = np.clip(BASE_DURATION * f_rpm * f_lambda, 25.0, 100.0)
-    
-#     return burn_duration
+#     # 4. Dynamic Clipping:
+#     # We raise the floor to 42.0. This ensures that even at 5000 RPM, 
+#     # the burn doesn't 'accelerate' into an engine-breaking pressure spike.
+#     return np.clip(BASE_DURATION * f_rpm * f_lambda, 42.0, 90.0)
 
-# def update_intake_manifold_pressure(effective_tps, rpm):
+# def update_intake_manifold_pressure(current_map, effective_tps, rpm, crank_angle, iat_k, dV_list):
 #     """
-#     Calculates MAP based on the Flow Coefficient (Cd) of the throttle
-#     vs the Volumetric Efficiency (VE) demand of the cylinders.
+#     Dynamic Filling and Emptying Model.
+    
+#     Args:
+#         current_map: Current P_manifold_Pa from previous step
+#         effective_tps: Throttle position (0-100) including idle air
+#         rpm: Engine speed
+#         crank_angle: Current CAD (0-719)
+#         iat_k: Intake Air Temperature in Kelvin
+#         dt: Time step in seconds (1/6*rpm)
 #     """
-#     tps_fraction = np.clip(effective_tps / 100.0, 0.001, 1.0)
+#     # 1. CONSTANTS
+#     V_manifold = c.V_DISPLACED # 2.1 Liters plenum volume (typical for WBX)
+#     R_air = c.R_SPECIFIC_AIR
+#     P_amb = c.P_ATM_PA # Ambient pressure
     
-#     # 1. Flow into manifold (Atmospheric pushing in)
-#     # Higher TPS = lower restriction
-#     flow_in_coef = tps_fraction * 1.5 
+#     dt = 1.0 / (6.0 * max(0.1, rpm))
     
-#     # 2. Flow out of manifold (Pistons pulling out)
-#     # Scales linearly with RPM and displacement (2.1L)
-#     # 0.15 is a tuning constant for the 'pumping' strength of this specific engine
-#     flow_out_demand = (rpm / 3000.0) * 0.09
-    
-#     # 3. The Balance
-#     # As flow_in_coef becomes much larger than flow_out_demand (WOT), 
-#     # the ratio approaches 1.0 (Atmospheric).
-#     map_ratio = flow_in_coef / (flow_in_coef + flow_out_demand)
-    
-#     # 4. Clipping
-#     # A VW 2.1L rarely pulls below 15 kPa or goes above 101 kPa (NA)
-#     return c.P_ATM_PA * np.clip(map_ratio, 0.15, 1.0)
+#     # 2. FLOW IN (Through Throttle)
+#     # Area-based flow. 0 TPS = 0 Flow (RL-Proof Stall)
+#     throttle_area = effective_tps / 100.0
+#     # Pressure delta drives flow into the manifold
+#     dp_in = max(0, P_amb - current_map)
+#     # Constant tuned so WOT recovery matches real-world response times
+#     mass_in = throttle_area * np.sqrt(dp_in) * 0.0015 * dt 
 
-# def update_intake_manifold_pressure(effective_tps, rpm):
-#     tps_fraction = np.clip(effective_tps / 100.0, 0.001, 1.0)
+#     # 3. FLOW OUT (Into Cylinders)
+#     # We sum the dV of any cylinder currently on an intake stroke
+#     total_dv = 0.0
+#     # A 4-cylinder Boxer has intake pulses every 180 degrees
+#     for offset in [0, 180, 360, 540]:
+#         cyl_cad = (crank_angle + offset) % 720
+#         # Intake stroke is roughly 0 to 180 degrees
+#         if 0 <= cyl_cad < 180:
+#             # We need the dV for this specific 1-degree movement
+#             # In your model, this comes from the slider-crank v_array
+#             # For simplicity here: total_dv = cylinder_dv_at_this_angle
+#             total_dv += dV_list[cyl_cad]
+
+#     # Mass = Density * Volume
+#     rho_manifold = current_map / (R_air * iat_k)
+#     mass_out = rho_manifold * total_dv
+
+#     # 4. STATE UPDATE (Ideal Gas Law Derivative)
+#     # dP = (dm * R * T) / V
+#     dm = mass_in - mass_out
+#     dp = (dm * R_air * iat_k) / V_manifold
     
-#     # 1. Flow In: Atmospheric push
-#     # Increase this slightly to simulate a high-flow filter/AFM
-#     flow_in_coef = tps_fraction * 1.8  # Was 1.5 and then 1.8
+#     new_map = current_map + dp
     
-#     # 2. Flow Out: Piston Demand
-#     # We use a power of 0.9 to slightly 'flatten' the demand at higher RPM
-#     # This simulates the engine reaching a flow limit more gracefully
-#     flow_out_demand = ((rpm / 3000.0) ** 0.9) * 0.11 # Adjusted constant
+#     # Return new pressure, no clipping. If it hits 0, the engine stalls.
+#     return max(0.0, new_map)
+
+# def update_intake_manifold_pressure(current_map, effective_tps, rpm, iat_k, total_dv):
+#     R_air = 287.05
+#     V_manifold = 0.0021 
+#     dt = 1.0 / (6.0 * max(0.1, rpm))
     
-#     # 3. The Balance
-#     map_ratio = flow_in_coef / (flow_in_coef + flow_out_demand)
+#     # 1. EMPTYING (The Geometric "Suction")
+#     rho_manifold = current_map / (R_air * iat_k)
+#     mass_out = rho_manifold * total_dv 
+
+#     # 2. FILLING (The Temporal "Leak")
+#     # To fix the "Zero Delta" problem in a single-step test, 
+#     # we use the P_amb vs current_map. 
+#     # But since current_map == P_amb at start, let's use a 
+#     # small epsilon or the pressure AFTER suction to see the delta.
     
-#     # 4. Clipping
-#     # Ensure MAP doesn't drop too fast. A 2.1L at 3200 RPM WOT 
-#     # should still have a MAP ratio around 0.94-0.96.
-#     return c.P_ATM_PA * np.clip(map_ratio, 0.15, 1.0)
+#     # PHYSICAL TRUTH: Flow is driven by the delta. 
+#     # Let's assume the throttle sees the vacuum created by the piston movement.
+#     estimated_vac = max(10, c.P_ATM_PA - (current_map - 882)) # Use a representative delta
+    
+#     # Increase this constant to 0.8 for the WBX throttle body scale
+#     m_dot_in = (effective_tps / 100.0) * np.sqrt(estimated_vac) * 0.8
+#     mass_in = m_dot_in * dt 
+
+#     # 3. INTEGRATION
+#     dm = mass_in - mass_out
+#     dp = (dm * R_air * iat_k) / V_manifold
+    
+#     return current_map + dp
+
+# def update_intake_manifold_pressure(current_map, effective_tps, rpm, iat_k, total_dv):
+#     """
+#     Standard Filling-and-Emptying Model.
+    
+#     Category: 
+#     - c. constants: Design specs (Volumes, Areas, Gas Constants)
+#     - dynamic args: State variables (RPM, IAT, MAP)
+#     """
+#     THROTTLE_FLOW_COEFF = 0.012
+    
+#     # 1. TIME STEP CALCULATIONS
+#     # Time for 1 degree of crank rotation
+#     dt = 1.0 / (6.0 * max(0.1, rpm)) 
+
+#     # 2. FILLING (Mass In from Throttle)
+#     # Flow is driven by the pressure delta between Atmosphere and Manifold
+#     delta_p = c.P_ATM_PA - current_map
+    
+#     # Standard Orifice Equation: Area * Velocity * Density
+#     # c.THROTTLE_FLOW_COEFF should be tuned to the physical 50mm plate flow capacity
+#     throttle_area_ratio = effective_tps / 100.0
+#     m_dot_in = throttle_area_ratio * np.sign(delta_p) * np.sqrt(abs(delta_p)) * THROTTLE_FLOW_COEFF
+#     mass_in = m_dot_in * dt
+
+#     # 3. EMPTYING (Mass Out to Cylinders)
+#     # Gas Density in the manifold (kg/m^3)
+#     rho_manifold = current_map / (c.R_SPECIFIC_AIR * iat_k)
+#     # Mass = Density * Volume Displaced
+#     mass_out = rho_manifold * total_dv
+
+#     # 4. PRESSURE DERIVATIVE (Ideal Gas Law)
+#     # dP = (dm * R * T) / V
+#     dm_net = mass_in - mass_out
+#     dp = (dm_net * c.R_SPECIFIC_AIR * iat_k) / c.V_INTAKE_MANIFOLD
+    
+#     # Return updated state (capped to prevent vacuum lower than absolute zero)
+#     return max(100.0, current_map + dp)
+
+# def update_intake_manifold_pressure(current_map, effective_tps, rpm, iat_k, dm_in_engine):
+#     """
+#     Revised Filling-and-Emptying Model using Direct Mass.
+    
+#     Args:
+#         current_map: Manifold pressure (Pa) from previous step
+#         effective_tps: Throttle opening (%)
+#         rpm: Engine speed
+#         iat_k: Intake Air Temp (K)
+#         dm_in_engine: Actual mass (kg) sucked out by all cylinders in the last degree
+#     """
+#     THROTTLE_FLOW_COEFF = 0.0020 # 0.012 # Tune this so MAP hits ~100kPa at WOT/high RPM
+    
+#     # 1. TIME STEP
+#     dt = 1.0 / (6.0 * max(0.1, rpm)) 
+
+#     # 2. FILLING (Mass In from Atmosphere)
+#     # Pushing air into the manifold
+#     delta_p = c.P_ATM_PA - current_map
+    
+#     # Simple orifice flow for throttle
+#     throttle_area_ratio = effective_tps / 100.0
+#     m_dot_in = throttle_area_ratio * np.sign(delta_p) * np.sqrt(abs(delta_p)) * THROTTLE_FLOW_COEFF
+#     mass_in = m_dot_in * dt
+
+#     # 3. EMPTYING (Mass Out to Cylinders)
+#     # We no longer calculate mass_out via density * dV. 
+#     # We use the actual kg provided by the cylinder flow physics.
+#     mass_out = dm_in_engine
+
+#     # 4. PRESSURE DERIVATIVE (Ideal Gas Law)
+#     # PV = mRT -> P = (m * R * T) / V
+#     # dP = (dm_net * R * T) / V_manifold
+#     dm_net = mass_in - mass_out
+    
+#     # Critical: Use the VOLUME of the manifold (Plenum + Runners), not displacement!
+#     dp = (dm_net * c.R_SPECIFIC_AIR * iat_k) / c.V_INTAKE_MANIFOLD
+    
+#     # 5. INTEGRATION
+#     # 100 Pa floor prevents math from breaking (absolute vacuum)
+#     return max(100.0, current_map + dp)
 
 
-def update_intake_manifold_pressure(effective_tps, rpm):
-    t = np.clip(effective_tps / 100.0, 0.0, 1.0)
+def update_intake_manifold_pressure(current_map, effective_tps, rpm, iat_k, dm_in_engine):
+    # Constants for Air
+    GAMMA = c.GAMMA_AIR
+    R = c.R_SPECIFIC_AIR
+    P_AMB = c.P_ATM_PA
+    T_AMB = iat_k 
     
-    # 1. Flow In: Atmospheric Supply
-    # We use t**2 for the curve, but increase the multiplier significantly (22.0).
-    # We drop the floor to 0.02 to ensure we hit the vacuum target at idle.
-    flow_in_coef = (t**2 * 22.0) + (t * 2.0) + 0.02
+    # 1. CALCULATE EFFECTIVE AREA (A_eff)
+    # Physically: Bore area * sin(angle) or similar. 
+    # For now, let's use the actual geometric area of a 50mm throttle
+    throttle_dia = 0.050 # 50mm
+    max_area = (np.pi * (throttle_dia**2)) / 4.0
+    A_geom = max_area * (effective_tps / 100.0)
     
-    # 2. Flow Out: Piston Demand
-    # Pumping demand needs to be strong enough to pull that vacuum at idle
-    # but scale linearly so it doesn't choke the engine at 3000 RPM.
-    flow_out_demand = (rpm / 3000.0) * 0.48
+    CD = _get_dynamic_throttle_cd(effective_tps)
+    A_eff = A_geom * CD
+
+    # 2. ISENTROPIC FLOW (Filling)
+    # Use absolute pressure ratio to determine flow direction
+    pr = current_map / P_AMB 
+
+    # Handle backflow (Manifold > Ambient)
+    if pr > 1.0:
+        # Technically, you should swap the pressures and calc flow OUT of the manifold
+        # For a simple manifold model, we can just treat it as zero or reverse subsonic
+        m_dot_in = 0.0 # Simplest guard
+        # Or implement reverse flow logic here if needed
+    else:
+        pr_crit = (2 / (GAMMA + 1))**(GAMMA / (GAMMA - 1))
+
+        if pr <= pr_crit:
+            # --- CHOKED FLOW ---
+            term_val = GAMMA * (2/(GAMMA+1))**((GAMMA+1)/(GAMMA-1))
+            m_dot_in = (A_eff * P_AMB / np.sqrt(R * T_AMB)) * np.sqrt(term_val)
+        else:
+            # --- SUBSONIC FLOW ---
+            # Added np.maximum(0, ...) to guard against tiny negative floating point errors
+            inner_val = (pr**(2/GAMMA) - pr**((GAMMA+1)/GAMMA))
+            term = np.sqrt((2*GAMMA / (GAMMA-1)) * np.maximum(0, inner_val))
+            m_dot_in = (A_eff * P_AMB / np.sqrt(R * T_AMB)) * term
+
+    # 3. INTEGRATION (Per Degree)
+    # dt for 1 degree at current RPM
+    dt = 1.0 / (6.0 * max(0.1, rpm)) 
     
-    map_ratio = flow_in_coef / (flow_in_coef + flow_out_demand)
+    mass_in = m_dot_in * dt
+    mass_out = dm_in_engine # Mass sucked out by cylinder logic this degree
     
-    # Return MAP in Pa
-    return c.P_ATM_PA * np.clip(map_ratio, 0.25, 1.0)
+    dm_net = mass_in - mass_out
+    
+    # Ideal Gas Law for Pressure Change
+    dp = (dm_net * R * T_AMB) / c.V_INTAKE_MANIFOLD
+    
+    return max(100.0, current_map + dp)
+
+
+def _get_dynamic_throttle_cd(tps):
+    # tps is 0-100
+    if tps < 6.0:
+        # IACV dominant range: high restriction, low efficiency
+        # Linear interpolation from 0.2 to 0.45
+        return 0.28 + (0.45 - 0.2) * (tps / 6.0)
+    else:
+        # Main throttle dominant: efficiency increases to a peak
+        # Linear interpolation from 0.45 at 6% to 0.65-0.70 at WOT
+        return 0.45 + (0.68 - 0.45) * ((tps - 6.0) / 94.0)
+
+def update_exhaust_pressure(rpm, ambient):
+    # Refined WBX Exhaust Backpressure Model
+    # 101325 is base atmospheric. 
+    # 1.8e-5 is a tuned constant for a stock WBX-2.1L muffler.
+    # At 3000 RPM, this adds ~1.6 kPa of backpressure.
+    # p_exhaust = ambient + (1.8e-5 * (rpm**2))
+    p_exhaust = 101325.0 + (4.0e-5 * (rpm**2))
+    return p_exhaust
+
+
+# def calculate_combustion_dq(cad, substep_idx, substep_size, cyl_state, lambda_):
+#     """
+#     Calculates the heat release (dQ) for a specific degree/substep.
+#     """
+#     # 1. Determine Wiebe Slice
+#     theta_start = cad + (substep_idx * substep_size)
+#     theta_next = theta_start + substep_size
+    
+#     f1 = calc_wiebe_fraction(theta_start, cyl_state.ignition_start_theta, 
+#                              cyl_state.burn_duration, a_vibe=5.0, m_vibe=cyl_state.m_vibe)
+#     f2 = calc_wiebe_fraction(theta_next, cyl_state.ignition_start_theta, 
+#                              cyl_state.burn_duration, a_vibe=5.0, m_vibe=cyl_state.m_vibe)
+#     step_fraction = max(0.0, f2 - f1)
+
+#     # 2. Dynamic Efficiency
+#     # Increased to 0.97 for the lambda power window to help hit 65 bar target
+#     eff = 0.97 if 0.85 <= lambda_ <= 1.05 else 0.85
+    
+#     # 3. Energy release limited by the limiting reactant
+#     # Proportional burn of the mass present at the time of spark
+#     dm_fuel_potential = cyl_state.fuel_mass_at_spark * step_fraction
+#     dm_air_potential  = cyl_state.air_mass_at_spark  * step_fraction
+
+#     # Clamp by remaining cylinder contents
+#     actual_fuel_burned = min(cyl_state.fuel_mass_kg, dm_fuel_potential)
+#     actual_air_burned  = min(cyl_state.air_mass_kg, dm_air_potential)
+
+#     # 4. Stoichiometric Heat Calculation (Rich vs Lean)
+#     if lambda_ < 1.0:
+#         # Rich: Limited by available Oxygen (Air)
+#         dq = (actual_air_burned / 14.7) * c.LHV_FUEL_GASOLINE * eff
+#     else:
+#         # Lean: Limited by available Fuel
+#         dq = actual_fuel_burned * c.LHV_FUEL_GASOLINE * eff
+
+#     return dq, actual_fuel_burned, actual_air_burned
 
 
 def calculate_combustion_dq(cad, substep_idx, substep_size, cyl_state, lambda_):
-    """
-    Calculates the heat release (dQ) for a specific degree/substep.
-    """
-    # 1. Determine Wiebe Slice
+    # 1. Determine Wiebe Slice (Keep your stable f2 - f1 logic)
     theta_start = cad + (substep_idx * substep_size)
     theta_next = theta_start + substep_size
     
@@ -1304,41 +1846,126 @@ def calculate_combustion_dq(cad, substep_idx, substep_size, cyl_state, lambda_):
                              cyl_state.burn_duration, a_vibe=5.0, m_vibe=cyl_state.m_vibe)
     step_fraction = max(0.0, f2 - f1)
 
-    # 2. Dynamic Efficiency
-    # Increased to 0.97 for the lambda power window to help hit 65 bar target
-    eff = 0.97 if 0.85 <= lambda_ <= 1.05 else 0.85
-    
-    # 3. Energy release limited by the limiting reactant
-    # Proportional burn of the mass present at the time of spark
+    # 2. Stoichiometry & Mass Limitation
     dm_fuel_potential = cyl_state.fuel_mass_at_spark * step_fraction
     dm_air_potential  = cyl_state.air_mass_at_spark  * step_fraction
 
-    # Clamp by remaining cylinder contents
     actual_fuel_burned = min(cyl_state.fuel_mass_kg, dm_fuel_potential)
     actual_air_burned  = min(cyl_state.air_mass_kg, dm_air_potential)
 
-    # 4. Stoichiometric Heat Calculation (Rich vs Lean)
-    if lambda_ < 1.0:
-        # Rich: Limited by available Oxygen (Air)
-        dq = (actual_air_burned / 14.7) * c.LHV_FUEL_GASOLINE * eff
-    else:
-        # Lean: Limited by available Fuel
-        dq = actual_fuel_burned * c.LHV_FUEL_GASOLINE * eff
-
-    return dq, actual_fuel_burned, actual_air_burned
-
-def calc_specific_heat_cv(T):
-    """
-    Polynomial approximation of Cv based on JANAF tables.
-    Provides realistic pressure response by accurately modeling 
-    vibrational energy at high temperatures.
-    """
-    T = max(300, min(T, 3500))
+    # 3. Gross Chemical Energy Release
+    # Use a standard efficiency; dissociation is handled separately below
+    base_eff = 0.97 if 0.85 <= lambda_ <= 1.05 else 0.88
     
-    # Quadratic fit: starts at ~718 J/kgK at 300K 
-    # and curves realistically toward ~980 J/kgK at 2500K.
-    cv = 660 + (0.16 * T) - (0.000025 * T**2)
-    return cv
+    if lambda_ < 1.0:
+        dq_gross = (actual_air_burned / 14.7) * c.LHV_FUEL_GASOLINE * base_eff
+    else:
+        dq_gross = actual_fuel_burned * c.LHV_FUEL_GASOLINE * base_eff
+
+    # 4. Thermal Brakes (The "Sound Physics" Additions)
+    
+    # A) Dissociation (Move it HERE, not in EngineModel)
+    # As T rises, the effective energy release drops because molecules break apart
+    t_factor = 1.0
+    # if cyl_state.T_curr > 2300: # Lowered threshold to catch the rise earlier
+    #     # t_factor = max(0.75, 1.0 - (cyl_state.T_curr - 2300) / 2000.0)
+    #     T_norm = (cyl_state.T_curr - 2300) / 700.0  # reaches 1.0 at 3000K
+    #     t_factor = max(0.82, 1.0 - (0.18 * T_norm**2)) # Up to 18% energy absorption
+    # if cyl_state.T_curr > 2400:
+    #     # A 12% reduction at 2900K is physically standard
+    #     t_factor = 1.0 - (min(0.12, (cyl_state.T_curr - 2400) / 4000.0))
+    #     dq_gross *= t_factor
+    # Inside calculate_combustion_dq step 4A
+    # if cyl_state.T_curr > 2200:
+    #     # Use a steeper curve for dissociation energy absorption
+    #     T_excess = max(0, cyl_state.T_curr - 2200)
+    #     # At 2800K (600 excess), factor is ~0.70 (30% energy absorption)
+    #     t_factor = 1.0 - (T_excess / 2000.0)**1.5 
+    #     t_factor = max(0.65, t_factor)
+    if cyl_state.T_curr > 2450:
+        # We only start 'braking' when we are actually near the limit.
+        # This keeps the early P-V work high (cooling the gas via expansion).
+        T_excess = max(0, cyl_state.T_curr - 2450)
+        
+        # Use a very aggressive power (3.0) to 'Wall' the temperature.
+        # At 2750K (300 excess), factor is 1.0 - (300/500)^3 = 0.784 (21% drop)
+        t_factor = 1.0 - (T_excess / 500.0)**3.0
+        t_factor = max(0.65, t_factor)
+
+    
+    dq_after_dissociation = dq_gross * t_factor
+
+    # B) Vaporization Cooling (Latent Heat)
+    # Every bit of fuel entering the 'burn' must vaporize
+    q_vaporization = dm_fuel_potential * 350000.0
+
+    # C) Rich Mixture Heating (Sensible Heat)
+    # If rich, calculate the heating cost of the excess fuel in THIS slice
+    excess_fuel_in_slice = max(0.0, dm_fuel_potential - actual_fuel_burned)
+    # Fuel vapor Cp is ~2500 J/kgK. Heating from port temp (~350K) to T_curr
+    q_rich_heating = excess_fuel_in_slice * 2500.0 * (cyl_state.T_curr - 350.0)
+
+    # 5. Final Net dQ
+    dq_net = dq_after_dissociation - q_vaporization - q_rich_heating
+
+    return dq_net, actual_fuel_burned, actual_air_burned
+
+
+# def calc_physical_m_vibe(rpm, lambda_val, residual_fraction=0.10):
+#     """
+#     Calculates m_vibe based on mechanical turbulence (RPM), 
+#     chemical mixture (Lambda), and dilution (Residuals).
+#     """
+#     # 1. Base Mechanical Shape (Proxy for Turbulence/Piston Speed)
+#     #    Keep the burn 'fast' (2.1) through the peak, then 
+#     # ramp up sharply only AFTER 4800 RPM.
+#     rpm_points = [1000, 2000, 3500, 4800, 5500]
+#     m_base_pts = [3.8,  3.1,  2.1,  2.1,  3.8]
+#     m_base = np.interp(rpm, rpm_points, m_base_pts)
+
+#     # 2. Lambda Penalty (Chemical Speed)
+#     # Flame speed peaks at ~0.85-0.90. It slows down significantly as you go lean.
+#     # We use a quadratic penalty centered at 0.88.
+#     lambda_ref = 0.88
+#     # If lambda is 1.0 (Stoich), penalty is ~1.1x. If 1.2 (Lean), penalty is ~1.5x.
+#     k_lambda = 1.0 + 3.0 * (max(0, lambda_val - lambda_ref)**2)
+
+#     # 3. Residual Penalty (Dilution/EGR)
+#     # High residuals at low RPM/load 'dampen' the flame front.
+#     # Normal residuals are ~10%. If they spike to 20%, m_vibe increases.
+#     k_res = 1.0 + (residual_fraction * 2.0)
+
+#     # Final Combined m_vibe
+#     m_final = m_base * k_lambda * k_res
+    
+#     # Physical safety clamp for the Wiebe function stability
+#     return np.clip(m_final, 1.2, 5.0)
+
+def calc_physical_m_vibe(rpm, lambda_val, residual_fraction=0.10):
+    # 1. Base Mechanical Shape
+    # Standardize around 2.0 for the bulk of the power band.
+    # Higher m at low RPM (slow piston speed = lazy flame start)
+    rpm_points = [1000, 2000, 3000, 5000]
+    m_base_pts = [2.0, 1.9, 1.8, 2.2] # Linear/Crisper start at idle
+    # m_base_pts = [2.5,  2.1,  1.8,  2.2] 
+    m_base = np.interp(rpm, rpm_points, m_base_pts)
+
+    # 2. Lambda Penalty (Chemical Speed)
+    # Use a softer scaling. Flame speed doesn't change the SHAPE 
+    # as much as it changes the DURATION.
+    lambda_ref = 0.88
+    # We only want to bump m_vibe significantly if we go very lean.
+    m_lambda_offset = 1.5 * (max(0, lambda_val - lambda_ref)**2)
+
+    # 3. Residual Penalty
+    # Offset rather than multiplier
+    m_res_offset = residual_fraction * 1.5
+
+    # Final m_vibe calculation (Base + Offsets)
+    m_final = m_base + m_lambda_offset + m_res_offset
+    
+    return np.clip(m_final, 1.1, 4.0)
+
 
 # def calc_specific_heat_cv(T):
 #     """

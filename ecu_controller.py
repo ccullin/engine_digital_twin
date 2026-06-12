@@ -225,6 +225,10 @@ class ECUController:
             correction = np.clip(error / 25.0, -10.0, 10.0)   
             spark_advance = idle_base_spark - correction # Negative because error > 0 (high RPM) needs retard (-)
             spark_advance_btdc = np.clip(spark_advance, -5, 45)
+            
+            """OVERRIDE THE OVERRIDE WHIL TRAINING FOR IACV CONTROL"""
+            spark_advance_btdc = 15
+            """"""
         
         # 3. VE OVERRIDE. Use a static VE value for the 'Idle Zone' 
         # to prevent the table from 'stepping' between cells
@@ -383,14 +387,12 @@ class ECUController:
         DFCO_ENGAGE_RPM = 3000
         DFCO_DISENGAGE_RPM = 1500 # Slightly lower to allow PID to catch
         
-        """ DEBUG """
-        # if TPS_percent < 1.0 and rpm_avg > DFCO_ENGAGE_RPM:
-        #     self.fuel_cut_active = True
-        #     return 0.0  # Close valve completely during coasting
+        if TPS_percent < 1.0 and (DFCO_DISENGAGE_RPM < rpm_avg < DFCO_ENGAGE_RPM):
+            self.fuel_cut_active = True
+            return 0.0  # Close valve completely during coasting
             
         # 3. PID Engagement Check
         # Only run PID if throttle is closed and we aren't at high RPM
-        """ DEBUG """
         if TPS_percent < 5.0: #and rpm_avg < DFCO_DISENGAGE_RPM:
             
             # --- Errors ---
@@ -446,7 +448,7 @@ class ECUController:
         else:
             # If driver is on the throttle, the IACV usually holds a 
             # "dashpot" position to prevent stalling when they lift off.
-            iacv_pos = 33 # Fixed small bypass (1.5% WOT)
+            iacv_pos = 25 # Fixed small bypass (1.5% WOT)
             
         return iacv_pos  
 
