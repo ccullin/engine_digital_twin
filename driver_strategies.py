@@ -595,16 +595,19 @@ class MotoringStrategy(BaseStrategy):
             # Calculate the points
             ivo_1mm, ivc_1mm = self.get_lift_timing(theta_vec, lift_int_vec, threshold=1.0) # 0.001m = 1mm
             evo_1mm, evc_1mm = self.get_lift_timing(theta_vec, lift_exh_vec, threshold=1.0)
-                       
+            
+            ivo_0mm, ivc_0mm = engine_data.valves.intake.open_angle, engine_data.valves.intake.close_angle
+            evo_0mm, evc_0mm = engine_data.valves.exhaust.open_angle, engine_data.valves.exhaust.close_angle   
+                                   
             # Create a string for the chart overlay
             timing_str = (
                 f"1mm Timing:\n"
-                f"IVO: {ivo_1mm:3.0f}°  IVC: {ivc_1mm:3.0f}°\n"
-                f"EVO: {evo_1mm:3.0f}°  EVC: {evc_1mm:3.0f}°\n"
+                f"IVO: {ivo_1mm:3.0f}°  IVC: {ivc_1mm:3.0f}° dur: {(ivc_1mm - ivo_1mm)%720:3.0f}°\n"
+                f"EVO: {evo_1mm:3.0f}°  EVC: {evc_1mm:3.0f}° dur: {(evc_1mm - evo_1mm)%720:3.0f}°\n"
                 "\n"
                 f"0mm Timing:\n"
-                f"IVO: {engine_data.valves.intake.open_angle:3.0f}°  IVC: {engine_data.valves.intake.close_angle:3.0f}°\n"
-                f"EVO: {engine_data.valves.exhaust.open_angle:3.0f}°  EVC: {engine_data.valves.exhaust.close_angle:3.0f}°"
+                f"IVO: {ivo_0mm:3.0f}°  IVC: {ivc_0mm:3.0f}° dur: {(ivc_0mm - ivo_0mm)%720:3.0f}°\n"
+                f"EVO: {evo_0mm:3.0f}°  EVC: {evc_0mm:3.0f}° dur: {(evc_0mm - evo_0mm)%720:3.0f}°"
             )
 
             # Use coordinate transform 'axes fraction' so (0,0) is bottom-left and (1,1) is top-right
@@ -718,30 +721,35 @@ class MotoringStrategy(BaseStrategy):
         dashboard_manager.update_strategy_overlay(lines)
         dashboard_manager.draw()
         
-    def get_lift_timing(self, theta, lift, threshold=1.0): #mm
-        # Find indices where lift is above threshold
-        above = np.where(lift >= threshold)[0]
-        if len(above) == 0:
+    def get_lift_timing(self, theta, lift, threshold=1.0):
+        """
+        Finds the exact crank angle degrees closest to the target lift threshold
+        by separating the opening flank (positive slope) from the closing flank (negative slope).
+        """
+        # 1. Compute absolute distance to the threshold
+        abs_diff = np.abs(lift - threshold)
+        
+        # 2. Isolate active regions (ignore dead zone where valve is closed)
+        active_mask = lift > 0.05
+        if not np.any(active_mask):
             return None, None
             
-        # Check for wrapping: are the indices contiguous?
-        # np.diff(above) > 1 finds the "gap" in the array of indices
-        diffs = np.diff(above)
-        gap_indices = np.where(diffs > 1)[0]
+        # 3. Compute central differences for the slope (velocity direction)
+        # np.gradient handles edge wrapping beautifully if specified, or simple differences work:
+        slope = np.gradient(lift)
         
-        if len(gap_indices) > 0:
-            # WRAPPED CASE: e.g., [0, 1, 2 ... 718, 719]
-            # The true "Opening" is the first index AFTER the gap
-            # The true "Closing" is the index BEFORE the gap
-            opened = theta[above[gap_indices[0] + 1]]
-            closed = theta[above[gap_indices[0]]]
-        else:
-            # STANDARD CASE: e.g., [100, 101, ... 200]
-            opened = theta[above[0]]
-            closed = theta[above[-1]]
+        # 4. Separate opening indices from closing indices using the slope sign
+        opening_indices = np.where(active_mask & (slope > 0.001))[0]
+        closing_indices = np.where(active_mask & (slope < -0.001))[0]
+        
+        if len(opening_indices) == 0 or len(closing_indices) == 0:
+            return None, None
             
-        return opened, closed
-
+        # 5. Find global indices with the minimum difference on each flank
+        opened_idx = opening_indices[np.argmin(abs_diff[opening_indices])]
+        closed_idx = closing_indices[np.argmin(abs_diff[closing_indices])]
+        
+        return int(theta[opened_idx]), int(theta[closed_idx])
 
 class RoadtestStrategy(BaseStrategy):
     """
@@ -867,6 +875,7 @@ class RoadtestStrategy(BaseStrategy):
 
         dashboard_manager.draw()
 
+
 class ImpulseDynoStrategy(BaseStrategy):
     """
     A full rpm sweep impulse dyno
@@ -949,8 +958,6 @@ class ImpulseDynoStrategy(BaseStrategy):
             else:
                 self.dyno_complete = True
 
-  
-  
     def update_dashboard(self, dashboard_manager, current_cycle=None, data=None):
         """Standardized update called every cycle by the main loop"""
         axes = dashboard_manager.get_strategy_axes()
@@ -974,22 +981,29 @@ class ImpulseDynoStrategy(BaseStrategy):
             self.artists_created = True
 
         rpms = self.rpm_range
+
+    
+        # --- UPDATE PLOT 1 (Power Curve) ---
+        # ================================================
         active_torques = self.governor_torque_data
         active_powers = self.power_data
-    
-        # 1. Update Plot 1 (Power Curve)
         self.line_torque.set_data(rpms, active_torques)
         self.line_power.set_data(rpms, active_powers)
         plot1.set_xlim(1000, 5200)
 
         # 2. Process Stats (Every 3 cycles to maintain performance)
         if (current_cycle % ImpulseDynoStrategy.STABLISATION_CYCLES) == 0 and current_cycle > 0 and not self.dyno_complete:
-            # --- CALCULATE LOSSES ---
+
+            # --- UPDATE PLOT 2 MEP and FRICTION LOSSES ---
+            # ================================================
+
             # MEP values (Bar)
-            current_PMEP = -(engine_data.state.work_pumping_j / (c.V_DISPLACED * c.NUM_CYL * 1e5))
-            self.pmep_data.append(current_PMEP)
+            # current_PMEP = engine_data.state.work_pumping_j / (c.V_DISPLACED * c.NUM_CYL * 1e5)
             # current_FMEP = engine_data.state.work_friction_j / (c.V_DISPLACED * c.NUM_CYL * 1e5)
-            # self.fmep_data.append(abs(current_FMEP))
+            current_PMEP = engine_data.state.PMEP
+            current_FMEP = engine_data.state.FMEP
+            self.pmep_data.append(current_PMEP)
+            self.fmep_data.append(current_FMEP)
             
             # plotting Torque friction rather than MEP
             t_fric_global_mean = np.mean(engine_data.state.torque_friction_global_history)
@@ -1000,14 +1014,16 @@ class ImpulseDynoStrategy(BaseStrategy):
             current_len = len(self.pmep_data)
             rpms_view = rpms[:current_len]
             
-            # # --- UPDATE PLOT 2 (MEP Lines) ---
-            # self.line_pmep.set_data(rpms_view, self.pmep_data)
-            # self.line_fmep.set_data(rpms_view, self.fmep_data)
-            # plot2.set_ylim(0, max(max(self.fmep_data, default=1), 2.5))
-            # plot2.set_xlim(min(rpms), max(rpms))
+            # update MEP lines
+            self.line_pmep.set_data(rpms_view, self.pmep_data)
+            self.line_fmep.set_data(rpms_view, self.fmep_data)
+            # dynamically update the Y-axis limits using the stored axis variable
+            current_min = min(self.fmep_data) if self.fmep_data else 0
+            new_ymin = min(current_min, -2.0)
+            plot2.twin_axis.set_ylim(new_ymin, 0)
             
 
-            self.line_pmep.set_data(rpms_view, self.pmep_data)
+            # update friction lines
             self.line_tfric_global.set_data(rpms_view, self.tfric_global_data)
             self.line_tfric_piston.set_data(rpms_view, self.tfric_piston_data)
 
@@ -1017,25 +1033,29 @@ class ImpulseDynoStrategy(BaseStrategy):
             plot2.set_ylim(0, max_val)
             plot2.set_xlim(min(rpms), max(rpms))
 
+            #
             # --- UPDATE PLOT 3 (VE) ---
+            # ================================================
             ideal_air_mass = (c.P_ATM_PA * c.V_DISPLACED) / (c.R_SPECIFIC_AIR * c.T_AMBIENT)
-            current_ve = (engine_data.cyl.air_mass_at_IVC - engine_data.cyl.air_mass_at_TDC) / ideal_air_mass
+            current_ve = (engine_data.cyl.air_mass_at_IVC) / ideal_air_mass
             self.ve_data.append(current_ve * 100)
             self.line_ve.set_data(rpms_view, self.ve_data)
             plot3.set_xlim(min(rpms), max(rpms))
             
             # cd_i = engine_data.cyl.Cd_in_history
 
-            # --- UPDATE PLOT 4 (STACKED TORQUE BREAKDOWN) ---
-            # 1. Capture current torque components (Nm)
             
+            # --- UPDATE PLOT 4 (STACKED TORQUE BREAKDOWN) ---
+            # ================================================
+            
+            # 1. Capture current torque components (Nm)
             t_brake = np.mean(engine_data.state.torque_brake_history)
             t_fric_piston = abs(np.mean(engine_data.state.torque_friction_piston_history))
             t_fric_global = abs(np.mean(engine_data.state.torque_friction_global_history))
             t_indicated = np.mean(engine_data.state.torque_indicated_history)
         
             # Physics: Convert PMEP Bar to Torque Nm: T = (P * Vd) / (4 * pi)
-            t_pumping = (current_PMEP * 1e5 * (c.V_DISPLACED * c.NUM_CYL)) / (4 * np.pi)
+            t_pumping = abs((current_PMEP * 1e5 * (c.V_DISPLACED * c.NUM_CYL)) / (4 * np.pi))
             
             self.t_brake_stack.append(t_brake)
             self.t_fric_stack.append(t_fric_piston + t_fric_global)
@@ -1093,9 +1113,17 @@ class ImpulseDynoStrategy(BaseStrategy):
                                        bbox=dict(boxstyle="round", alpha=0.6, facecolor='white'))
         else:
             self.dyno_text.set_text(dyno_str)
+            
         
-        dashboard_manager.update_strategy_overlay([])
+        # --- Updated Table Lines ---
+        lines = [
+            # --- intentionally left blank  ---
+        ]
+        
+        dashboard_manager.update_strategy_overlay(lines)
         dashboard_manager.draw()
+        
+
     
     def _setup_plots(self, plot1, plot2, plot3, plot4):
         # --- PLOT 1: DYNO CURVE ---
@@ -1111,20 +1139,21 @@ class ImpulseDynoStrategy(BaseStrategy):
         ax1_twin.set_ylim(10, 90)
         self.line_power, = ax1_twin.plot([], [], color='magenta', linewidth=2, ls='--', label='Power')
 
-        # --- PLOT 2: MEP LOSSES ---
+        # --- PLOT 2: LOSSES ---
         plot2.clear()
         plot2.set_title("Pumping (bar) and Friction (Nm)")
         plot2.set_ylabel("Friction (Nm)", color='blue')
-        self.line_fmep, = plot2.plot([], [], label='FMEP', color='red', lw=1, ls='--')
-        self.line_tfric_global, = plot2.plot([], [], label='T_fric_global', color='red', lw=1, ls='--')
-        self.line_tfric_piston, = plot2.plot([], [], label='T_fric_piston', color='blue', lw=1, ls='--')
-        
-        
         plot2_2 = plot2.twinx()
-        plot2_2.set_ylabel("PMEP (bar)", color='orange')
-        plot2_2.set_ylim(0, 2.0)
-        self.line_pmep, = plot2_2.plot([], [], label='PMEP', color='orange', lw=2)
+        plot2_2.set_ylabel("MEP (bar)", color='orange')
+        plot2.twin_axis = plot2_2
+        
+        self.line_tfric_global, = plot2.plot([], [], label='T_fric_global', color='red', lw=2, ls='--')
+        self.line_tfric_piston, = plot2.plot([], [], label='T_fric_piston', color='blue', lw=2, ls='--')
+        self.line_fmep, = plot2_2.plot([], [], label='FMEP', color='green', lw=2, ls=':')
+        self.line_pmep, = plot2_2.plot([], [], label='PMEP', color='orange', lw=2, ls=':')
+        
         plot2.legend(loc='upper left', fontsize='small')
+        plot2_2.legend(loc='upper right', fontsize='small')
 
         # --- PLOT 3: VOLUMETRIC EFFICIENCY ---
         plot3.clear()
@@ -1154,11 +1183,12 @@ class ImpulseDynoStrategy(BaseStrategy):
         # 1. Prepare Summary Scalars (Calculate these once per cycle)
         v_disp_total = c.V_DISPLACED * c.NUM_CYL
         # Convert Joules/m^3 to Bar (1e5 Pa = 1 Bar)
-        pmep_bar = (telem.state.work_pumping_j / v_disp_total) / 1e5
-        fmep_bar = (telem.state.work_friction_j / v_disp_total) / 1e5
-        imep_bar = (telem.state.work_net_indicated_j / v_disp_total) / 1e5
-        bmep_bar = imep_bar - fmep_bar
-        mech_eff = (bmep_bar / imep_bar * 100) if imep_bar > 0 else 0
+        pmep = telem.state.PMEP
+        fmep = telem.state.FMEP
+        imep_n = telem.state.IMEP_net
+        bmep = telem.state.BMEP
+        
+        mech_eff = (bmep / imep_n * 100) if imep_n > 0 else 0
 
         # 2. Header (Focus on gas exchange dynamics)
         header = (f"{'CAD':>4} | {'P_cyl[kP]':>9} | {'P_man[kP]':>9} | {'dm_in[mg]':>10} | "
@@ -1190,13 +1220,11 @@ class ImpulseDynoStrategy(BaseStrategy):
         
         print("-" * len(header))
         print(f"--- CYCLE {current_cycle} SUMMARY ---")
-        print(f"VE: {ve:6.2f}% | Pumping: {pmep_bar:5.2f} bar | Friction: {fmep_bar:5.2f} bar")
-        print(f"IMEP: {imep_bar:5.2f} bar | BMEP: {bmep_bar:5.2f} bar | Mech Eff: {mech_eff:5.1f}%")
+        print(f"VE: {ve:6.2f}% | Pumping: {pmep:5.2f} bar | Friction: {fmep:5.2f} bar")
+        print(f"IMEPn: {imep_n:5.2f} bar | BMEP: {bmep:5.2f} bar | Mech Eff: {mech_eff:5.1f}%")
         print(f"Mass Trapped: {m_trapped*1e6:6.2f}mg | Target (100% VE): {ideal_air_mass*1e6:6.2f}mg")
 
-                        
-
-    
+                                                    
 class DynoStrategy(BaseStrategy):
     """
     A variable load Dyno with a full rpm sweep

@@ -1,4 +1,4 @@
-# ignore  files
+# ignore  debug files and backup files
 engine_log.csv
 debug_*.txt
 *copy.py
@@ -13,12 +13,10 @@ events.*
 # ignore folders
 __pycache__/
 venv/
-env/
-archive_*/
-src/
+.*/
 
 
-# Reinforced Learning files
+# Ignore Reinforced Learning files and folders
 #files
 rl_*.py
 *.zip

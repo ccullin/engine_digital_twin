@@ -15,13 +15,20 @@ V_INTAKE_MANIFOLD = V_DISPLACED * NUM_CYL * 1.5
 
 
 # =================================== VALVE AND CAM  ========================
-INTAKE_DURATION_1mm  = 224.0 # degrees advertised.  (assume 1mm)
-EXHAUST_DURATION_1mm = 230
-CENTERLINE           = 108.0 # degrees ATDC
-INTAKE_DIAM          = 40 # mm
-INTAKE_MAX_LIFT      = 8  # mm
-EXHAUST_DIAM         = 34 # mm
-EXHAUST_MAX_LIFT     = 9  # mm
+# INTAKE_DURATION_1mm  = 224.0 # degrees advertised.  (assume 1mm)
+# EXHAUST_DURATION_1mm = 230.0
+INTAKE_DURATION  = 238.0 # at 1mm.  see https://brickwerks.co.uk/tech/t3-technical-section/t3-data/mv-engine-data/
+EXHAUST_DURATION = 230.0 # at 1mm
+# INTAKE_DURATION  = 184.0 # @1mm
+# EXHAUST_DURATION = 180.0 # @1mm
+IS_AT_1mm        = True
+INTAKE_CENTERLINE    = 109 #ATDC
+EXHAUST_CENTERLINE   = 115 #BTDC
+# CENTERLINE           = 108.0 # degrees ATDC
+INTAKE_DIAM          = 40   # mm
+INTAKE_MAX_LIFT      = 10.2 #8.75  # mm
+EXHAUST_DIAM         = 34    # mm
+EXHAUST_MAX_LIFT     = 10.2 #8.35  # mm
 
 
 

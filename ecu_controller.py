@@ -5,7 +5,7 @@
 # Copyright (c) 2025 Chris Cullin
 
 
-import sys
+# import sys
 import constants as c
 import numpy as np
 from efi_tables import EFITables
@@ -124,9 +124,9 @@ class ECUController:
         self.outputs.target_rpm = self.idle_target_rpm
         self.outputs.iacv_pos = self.idle_valve_position
         self.outputs.iacv_wot_equiv = self.iacv_wot_equiv
-        self.outputs.pid_P = self.pid_P
-        self.outputs.pid_I = self.pid_I
-        self.outputs.pid_D = self.pid_D
+        self.outputs.pid_P = float(self.pid_P)
+        self.outputs.pid_I = float(self.pid_I)
+        self.outputs.pid_D = float(self.pid_D)
         self.outputs.trapped_air_mass_kg = self.trapped_air_mass_kg
         self.outputs.ve_fraction = self.ve_fraction
         self.outputs.injector_on = self.injector_is_active
@@ -408,17 +408,17 @@ class ECUController:
                 kd = 0.000   # 0.001 Damping to prevent overshoot during flare
                 
                 # --- Proportional ---
-                P = kp * error_instant 
+                pVal = kp * error_instant 
                     
                 # --- Integral (with Anti-Windup) ---
                 self.idle_integral += ki * error_avg
                 # Clamp integral to +/- 20% of valve range
                 self.idle_integral = np.clip(self.idle_integral, -20.0, 20.0)
-                I = self.idle_integral
+                iVal = self.idle_integral
                 
                 # --- Derivative ---
                 rpm_rate = RPM - prev_rpm
-                D = kd * rpm_rate
+                dVal = kd * rpm_rate
         
                 # --- Base Flow Logic (0-100 scale) ---
                 # 35.0 is a typical warm idle DC for a VW 2.1L
@@ -436,14 +436,14 @@ class ECUController:
                     effective_base = 100.0 
 
                 # --- Total Raw Output (0-100 scale) ---
-                iacv_pos_raw = effective_base + P + I - D # D opposes direction of travel
+                iacv_pos_raw = effective_base + pVal + iVal - dVal # D opposes direction of travel
                 
                 # Clamp to physical hardware limits
                 iacv_pos = np.clip(iacv_pos_raw, 0.0, 100.0)
                 
-                self.pid_P = P
-                self.pid_I = I
-                self.pid_D = D
+                self.pid_P = float(pVal)
+                self.pid_I = float(iVal)
+                self.pid_D = float(dVal)
 
         else:
             # If driver is on the throttle, the IACV usually holds a 
